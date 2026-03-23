@@ -1,0 +1,38 @@
+{
+  "name": "Skill Optimization Example",
+  "description": "Example eval config for optimizing a Claude skill (SKILL.md)",
+  "target_type": "skill",
+  "criteria": [
+    {
+      "id": 1,
+      "question": "Does the output follow the format specified in the skill instructions?"
+    },
+    {
+      "id": 2,
+      "question": "Are all required sections or components present in the output?"
+    },
+    {
+      "id": 3,
+      "question": "Is the output free of placeholder text, template artifacts, or TODO markers?"
+    },
+    {
+      "id": 4,
+      "question": "Does the output directly address the user's task or question?"
+    },
+    {
+      "id": 5,
+      "question": "Would the output be usable without further manual editing?"
+    },
+    {
+      "id": 6,
+      "question": "Is the output appropriately detailed (not too brief, not excessively verbose)?"
+    }
+  ],
+  "test_prompts": [
+    "Create a simple project status report for a web redesign project that is 60% complete with 2 blockers",
+    "Generate a one-page summary of the key findings from a customer satisfaction survey",
+    "Write technical documentation for a REST API endpoint that creates a new user account"
+  ],
+  "runs_per_experiment": 5,
+  "notes": "Adjust the criteria and test prompts to match your specific skill. The test prompts should be realistic inputs your skill would receive in production."
+}
