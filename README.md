@@ -29,11 +29,11 @@ Claude will **modify → test → score → keep winners → discard losers → 
   │   1. Review current state + git history + log       │
   │   2. Pick ONE change based on what worked           │
   │   3. Make the change + git commit                   │
-  │   4. Run verification (tests, benchmarks, scores)  │
+  │   4. Run verification (tests, benchmarks, scores)   │
   │   5. Score improved? → KEEP. Worse? → REVERT.       │
-  │   6. Log result + repeat                           │
+  │   6. Log result + repeat                            │
   │                                                     │
-  │   Never stops unless you interrupt it.               │
+  │   Never stops unless you interrupt it.              │
   └─────────────────────────────────────────────────────┘
 ```
 
