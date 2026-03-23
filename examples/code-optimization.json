@@ -1,0 +1,38 @@
+{
+  "name": "Code Optimization Example",
+  "description": "Example eval config for optimizing a Python script's performance or reliability",
+  "target_type": "code",
+  "criteria": [
+    {
+      "id": 1,
+      "question": "Does the script run without errors or exceptions?"
+    },
+    {
+      "id": 2,
+      "question": "Does it produce the correct expected output for the test input?"
+    },
+    {
+      "id": 3,
+      "question": "Does it handle the edge case of empty or missing input gracefully?"
+    },
+    {
+      "id": 4,
+      "question": "Does execution complete in under 2 seconds?"
+    },
+    {
+      "id": 5,
+      "question": "Is the code readable with clear variable names and structure?"
+    },
+    {
+      "id": 6,
+      "question": "Does it include basic error handling (try/except or input validation)?"
+    }
+  ],
+  "test_prompts": [
+    "Process a CSV file with 1000 rows and 10 columns, outputting summary statistics",
+    "Process an empty CSV file with only headers",
+    "Process a CSV file with malformed rows (missing columns, extra commas)"
+  ],
+  "runs_per_experiment": 3,
+  "notes": "For code optimization, consider adding criteria for memory usage, security, and maintainability as needed. Fewer runs per experiment since code output is more deterministic than LLM output."
+}

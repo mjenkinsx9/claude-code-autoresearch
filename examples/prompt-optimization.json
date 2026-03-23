@@ -1,0 +1,34 @@
+{
+  "name": "Prompt Optimization Example",
+  "description": "Example eval config for optimizing any LLM prompt template",
+  "target_type": "prompt",
+  "criteria": [
+    {
+      "id": 1,
+      "question": "Does the response directly answer the question or complete the task?"
+    },
+    {
+      "id": 2,
+      "question": "Is the tone appropriate for the intended audience?"
+    },
+    {
+      "id": 3,
+      "question": "Does the response avoid hallucinated or fabricated information?"
+    },
+    {
+      "id": 4,
+      "question": "Is the response well-structured with a clear flow?"
+    },
+    {
+      "id": 5,
+      "question": "Does it include actionable information or concrete next steps?"
+    }
+  ],
+  "test_prompts": [
+    "What are the three most important things to consider when choosing a database for a new SaaS product?",
+    "Explain the difference between authentication and authorization to a non-technical product manager",
+    "Help me draft talking points for a meeting with stakeholders about a delayed project timeline"
+  ],
+  "runs_per_experiment": 5,
+  "notes": "These criteria are general-purpose. Customize them for your specific prompt's domain and audience."
+}
