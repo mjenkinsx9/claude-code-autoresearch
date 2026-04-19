@@ -179,6 +179,7 @@ def execute_target(
     run_index: int,
     output_dir: str,
     model: str = "sonnet",
+    allow_exec: bool = False,
 ) -> str:
     """
     Execute the target file against a test prompt and return the output.
@@ -218,8 +219,12 @@ Complete the task according to the instructions above."""
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return f"ERROR: {e}"
 
-    # For Python scripts: execute them
+    # For Python scripts: execute them (requires --allow-exec; LLM-authored code is untrusted)
     elif target_ext == ".py":
+        if not allow_exec:
+            return ("ERROR: refusing to execute .py target without --allow-exec. "
+                    "The loop rewrites this file with LLM-generated code on every iteration; "
+                    "pass --allow-exec only if you understand the risk.")
         try:
             result = subprocess.run(
                 [sys.executable, target_path],
@@ -233,6 +238,8 @@ Complete the task according to the instructions above."""
             return output
         except subprocess.TimeoutExpired:
             return "ERROR: script timed out (>120s)"
+        except (FileNotFoundError, OSError) as e:
+            return f"ERROR: failed to execute target: {e}"
 
     else:
         return f"ERROR: unsupported target type '{target_ext}'"
@@ -248,15 +255,33 @@ def run_eval(
     return run_eval_suite(outputs, eval_config["criteria"], model, verbose=False)
 
 
+def _sanitize_tsv_field(value) -> str:
+    """Flatten tabs/newlines/control chars so one cell can't break the TSV schema."""
+    s = str(value) if value is not None else ""
+    # Replace field/record separators and CR with spaces; drop other control chars.
+    return "".join(
+        " " if ch in ("\t", "\n", "\r") else ch
+        for ch in s
+        if ch == "\t" or ch == "\n" or ch == "\r" or ord(ch) >= 32
+    ).strip()
+
+
 def append_results_tsv(results_file: str, entry: dict):
     """Append an entry to results.tsv."""
     if not os.path.exists(results_file):
         with open(results_file, "w") as f:
             f.write("experiment\tscore\tmax_score\tstatus\tdescription\ttimestamp\n")
 
+    fields = [
+        _sanitize_tsv_field(entry["experiment"]),
+        _sanitize_tsv_field(entry["score"]),
+        _sanitize_tsv_field(entry["max_score"]),
+        _sanitize_tsv_field(entry["status"]),
+        _sanitize_tsv_field(entry["description"]),
+        _sanitize_tsv_field(entry["timestamp"]),
+    ]
     with open(results_file, "a") as f:
-        f.write(f"{entry['experiment']}\t{entry['score']}\t{entry['max_score']}\t"
-                f"{entry['status']}\t{entry['description']}\t{entry['timestamp']}\n")
+        f.write("\t".join(fields) + "\n")
 
 
 def print_banner(experiment_num: int, description: str):
@@ -271,7 +296,7 @@ def print_banner(experiment_num: int, description: str):
 def print_result(entry: dict, best_score: int):
     """Print experiment result."""
     emoji = "✅" if entry["status"] == "keep" else "❌" if entry["status"] == "discard" else "💥"
-    print(f"\n{emoji} Experiment {entry['experiment']:03d}: "
+    print(f"\n{emoji} Experiment {entry['experiment']}: "
           f"{entry['score']}/{entry['max_score']} — {entry['status'].upper()}")
     print(f"   {entry['description']}")
     print(f"   Best so far: {best_score}/{entry['max_score']}")
@@ -294,7 +319,30 @@ def main():
                         help="Model for evaluation judging (default: sonnet)")
     parser.add_argument("--max-experiments", type=int, default=0,
                         help="Max experiments to run (0 = infinite, default: 0)")
+    parser.add_argument("--allowed-root", default=None,
+                        help="Restrict --target to paths under this directory (default: current working directory)")
+    parser.add_argument("--allow-exec", action="store_true",
+                        help="Permit executing .py targets as subprocesses. Dangerous: the loop "
+                             "rewrites the target with LLM-generated code every iteration.")
     args = parser.parse_args()
+
+    # Sandbox: resolve --target and require it to live under --allowed-root (default: CWD).
+    allowed_root = Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve()
+    target_resolved = Path(args.target).resolve()
+    try:
+        target_resolved.relative_to(allowed_root)
+    except ValueError:
+        print(f"ERROR: --target {target_resolved} is not under --allowed-root {allowed_root}. "
+              f"Pass --allowed-root to widen the sandbox if this is intentional.", file=sys.stderr)
+        sys.exit(2)
+    if not target_resolved.exists():
+        print(f"ERROR: --target {target_resolved} does not exist.", file=sys.stderr)
+        sys.exit(2)
+    args.target = str(target_resolved)
+    if Path(args.target).suffix.lower() == ".py" and not args.allow_exec:
+        print(f"ERROR: target is a .py file but --allow-exec was not passed. "
+              f"The loop would execute LLM-rewritten Python on every iteration; refusing.", file=sys.stderr)
+        sys.exit(2)
 
     # Setup directories
     output_dir = Path(args.output_dir)
@@ -350,6 +398,7 @@ def main():
                 args.target, test_prompt, eval_config,
                 prompt_idx * args.runs_per_experiment + run_idx,
                 str(exp_runs_dir), args.execution_model,
+                allow_exec=args.allow_exec,
             )
             all_outputs.append(output)
 
@@ -403,10 +452,15 @@ def main():
             description = experiment.get("description", "unknown change")
             new_content = experiment.get("new_content", "")
 
-            # Validate new_content before writing
+            # Validate new_content before writing. We haven't touched the target yet,
+            # so just skip — calling revert_target here would undo the last KEPT change
+            # (backup_path still points at the snapshot taken before the prior experiment).
             if not new_content or not isinstance(new_content, str):
                 print(f"  ERROR: LLM returned invalid content (empty or non-string), skipping experiment")
-                revert_target(args.target, backup_path)
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    print(f"\nFATAL: {MAX_CONSECUTIVE_FAILURES} consecutive invalid experiments. Stopping.")
+                    break
                 continue
 
             print_banner(experiment_num, description)
@@ -430,6 +484,7 @@ def main():
                         args.target, test_prompt, eval_config,
                         prompt_idx * args.runs_per_experiment + run_idx,
                         str(exp_runs_dir), args.execution_model,
+                        allow_exec=args.allow_exec,
                     )
                     if output.startswith("ERROR:"):
                         print(f"    ⚠️  {output}")
@@ -458,10 +513,26 @@ def main():
             # Score
             eval_results = run_eval(all_outputs, eval_config, args.eval_model)
             score = eval_results["total_yes"]
+            judge_errors = eval_results.get("errors") or []
 
-            if score > best_score:
+            if judge_errors:
+                # Judge failed on ≥1 output — don't treat the zero-score as a real regression
+                print(f"  WARNING: judge errored on {len(judge_errors)}/{len(all_outputs)} output(s); "
+                      f"marking experiment as crash. First error: {judge_errors[0]}")
+                status = "crash"
+                # Consistent with the execute-crash branch above: crashes log score 0 so the
+                # ideator's history view and the dashboard don't treat a partial aggregate as
+                # a real regression. The full partial total is preserved in eval_results.json.
+                score = 0
+                revert_target(args.target, backup_path)
+                save_snapshot(args.target, str(snapshots_dir), experiment_num, "crash")
+            elif score > best_score:
                 status = "keep"
                 best_score = score
+                save_snapshot(args.target, str(snapshots_dir), experiment_num, "keep")
+            elif score == best_score and len(new_content) < len(current_content):
+                # Tie on score but simpler: per SKILL.md "Equal results + less code = KEEP"
+                status = "keep"
                 save_snapshot(args.target, str(snapshots_dir), experiment_num, "keep")
             else:
                 status = "discard"
