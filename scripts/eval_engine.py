@@ -165,6 +165,10 @@ def run_eval_suite(
         - total_yes: aggregate yes count
         - max_score: theoretical maximum
         - score_pct: percentage score
+        - errors: list of per-output error messages from the judge (empty if none).
+                  Callers should treat a non-empty list as "judge unavailable" and
+                  not as a legitimate score, since total_yes will be under-counted.
+        - timestamp: ISO-8601 time the suite completed
     """
     per_output = []
     total_yes = 0

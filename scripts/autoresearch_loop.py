@@ -520,6 +520,10 @@ def main():
                 print(f"  WARNING: judge errored on {len(judge_errors)}/{len(all_outputs)} output(s); "
                       f"marking experiment as crash. First error: {judge_errors[0]}")
                 status = "crash"
+                # Consistent with the execute-crash branch above: crashes log score 0 so the
+                # ideator's history view and the dashboard don't treat a partial aggregate as
+                # a real regression. The full partial total is preserved in eval_results.json.
+                score = 0
                 revert_target(args.target, backup_path)
                 save_snapshot(args.target, str(snapshots_dir), experiment_num, "crash")
             elif score > best_score:
