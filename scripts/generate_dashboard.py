@@ -11,11 +11,23 @@ Usage:
 
 import argparse
 import csv
+import html as html_lib
 import json
 import os
 import sys
 from pathlib import Path
 from datetime import datetime
+
+
+def _safe_json_for_script(obj) -> str:
+    """Serialize for inline <script> without allowing tag-breakout or HTML-comment tricks."""
+    return (
+        json.dumps(obj)
+        .replace("</", "<\\/")
+        .replace("<!--", "<\\!--")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
 
 
 def load_results(results_path: str) -> list[dict]:
@@ -27,7 +39,7 @@ def load_results(results_path: str) -> list[dict]:
             try:
                 row["score"] = int(row["score"])
                 row["max_score"] = int(row["max_score"])
-            except (ValueError, KeyError) as e:
+            except (ValueError, KeyError, TypeError) as e:
                 print(f"Warning: Skipping malformed row: {row} ({e})", file=sys.stderr)
                 continue
             row["score_pct"] = round(row["score"] / row["max_score"] * 100, 1) if row["max_score"] > 0 else 0
@@ -57,15 +69,16 @@ def generate_html(results: list[dict], title: str = "Autoresearch Results") -> s
             current_best = r["score"]
         running_best.append(current_best)
 
-    results_json = json.dumps(results)
-    running_best_json = json.dumps(running_best)
+    results_json = _safe_json_for_script(results)
+    running_best_json = _safe_json_for_script(running_best)
+    safe_title = html_lib.escape(title)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{title}</title>
+    <title>{safe_title}</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f23; color: #e0e0e0; min-height: 100vh; }}
@@ -108,7 +121,7 @@ def generate_html(results: list[dict], title: str = "Autoresearch Results") -> s
 </head>
 <body>
     <div class="container">
-        <h1>📊 {title}</h1>
+        <h1>📊 {safe_title}</h1>
         <div class="subtitle">Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · {total_experiments} experiments</div>
 
         <div class="stats-grid">
@@ -159,17 +172,23 @@ def generate_html(results: list[dict], title: str = "Autoresearch Results") -> s
         const maxScore = {max_score};
 
         // Populate table
+        const escapeHtml = (s) => String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;')
+            .replace(/`/g, '&#96;');
         const tbody = document.getElementById('resultsBody');
-        results.forEach((r, i) => {{
+        const rowsHtml = results.map((r) => {{
             const pct = r.max_score > 0 ? (r.score / r.max_score * 100).toFixed(1) : 0;
             const barClass = pct >= 80 ? 'high' : pct >= 50 ? 'mid' : 'low';
             const badgeClass = r.status === 'keep' ? 'badge-keep' : r.status === 'crash' ? 'badge-crash' : 'badge-discard';
             const ts = r.timestamp ? new Date(r.timestamp).toLocaleTimeString() : '';
-
-            tbody.innerHTML += `
+            return `
                 <tr>
-                    <td>${{r.experiment}}</td>
-                    <td>${{r.score}}/${{r.max_score}}</td>
+                    <td>${{escapeHtml(r.experiment)}}</td>
+                    <td>${{escapeHtml(r.score)}}/${{escapeHtml(r.max_score)}}</td>
                     <td>
                         <div class="score-bar">
                             <div class="score-bar-track">
@@ -178,12 +197,13 @@ def generate_html(results: list[dict], title: str = "Autoresearch Results") -> s
                             <span>${{pct}}%</span>
                         </div>
                     </td>
-                    <td><span class="badge ${{badgeClass}}">${{r.status}}</span></td>
-                    <td>${{r.description.replace(/</g, '&lt;').replace(/>/g, '&gt;')}}</td>
-                    <td>${{ts}}</td>
+                    <td><span class="badge ${{badgeClass}}">${{escapeHtml(r.status)}}</span></td>
+                    <td>${{escapeHtml(r.description)}}</td>
+                    <td>${{escapeHtml(ts)}}</td>
                 </tr>
             `;
-        }});
+        }}).join('');
+        tbody.innerHTML = rowsHtml;
 
         // Simple chart using canvas
         const canvas = document.getElementById('scoreChart');
@@ -302,7 +322,8 @@ def main():
     print(f"Dashboard generated: {args.output}")
     print(f"Experiments: {len(results)}")
     if results:
-        best = max(r["score"] for r in results if r["status"] != "crash")
+        non_crash = [r["score"] for r in results if r["status"] != "crash"]
+        best = max(non_crash) if non_crash else 0
         print(f"Best score: {best}/{results[0]['max_score']}")
 
 
