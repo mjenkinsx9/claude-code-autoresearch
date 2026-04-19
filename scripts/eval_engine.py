@@ -168,6 +168,7 @@ def run_eval_suite(
     """
     per_output = []
     total_yes = 0
+    errors = []
     max_score = len(criteria) * len(outputs)
 
     for i, output in enumerate(outputs):
@@ -176,6 +177,8 @@ def run_eval_suite(
         result = evaluate_single_output(output, criteria, model)
         per_output.append(result)
         total_yes += result["total_yes"]
+        if "error" in result:
+            errors.append(f"output {i+1}: {result['error']}")
 
         if verbose:
             print(f"    Score: {result['total_yes']}/{result['total_criteria']}")
@@ -187,6 +190,7 @@ def run_eval_suite(
         "total_yes": total_yes,
         "max_score": max_score,
         "score_pct": round(score_pct, 1),
+        "errors": errors,
         "timestamp": datetime.now().isoformat(),
     }
 
