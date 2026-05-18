@@ -20,11 +20,12 @@ import argparse
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+from agent_cli import run_agent_prompt
 
 
 def load_config(eval_config_path: str) -> dict:
@@ -92,6 +93,8 @@ def generate_experiment(
     results_history: list,
     eval_config: dict,
     model: str = "opus",
+    agent_backend: str = "auto",
+    agent_command: str = "",
 ) -> dict:
     """
     Use an LLM to generate the next experiment — what change to make to the target.
@@ -143,32 +146,35 @@ Remember:
 - If recent experiments failed, try a different approach
 - Think about which eval criteria fail most and target those"""
 
+    result = run_agent_prompt(
+        prompt,
+        model=model,
+        timeout=300,
+        backend=agent_backend,
+        command_template=agent_command,
+    )
+    if not result.ok:
+        print(f"  Agent backend failed ({result.backend}): {result.stderr[:500]}")
+        return None
+
+    response = result.stdout.strip()
+
+    # Extract JSON
+    json_str = response
+    if "```" in json_str:
+        parts = json_str.split("```")
+        for part in parts[1:]:
+            if part.startswith("json"):
+                json_str = part[4:].strip()
+                break
+            elif part.strip().startswith("{"):
+                json_str = part.strip()
+                break
+
     try:
-        result = subprocess.run(
-            ["claude", "-p", prompt, "--model", model, "--output-format", "text"],
-            capture_output=True, text=True, timeout=300
-        )
-        if result.returncode != 0:
-            return None
-
-        response = result.stdout.strip()
-
-        # Extract JSON
-        json_str = response
-        if "```" in json_str:
-            parts = json_str.split("```")
-            for part in parts[1:]:
-                if part.startswith("json"):
-                    json_str = part[4:].strip()
-                    break
-                elif part.strip().startswith("{"):
-                    json_str = part.strip()
-                    break
-
         return json.loads(json_str)
-
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError) as e:
-        print(f"  Error generating experiment: {e}")
+    except json.JSONDecodeError as e:
+        print(f"  Error parsing experiment JSON from {result.backend}: {e}")
         return None
 
 
@@ -180,6 +186,8 @@ def execute_target(
     output_dir: str,
     model: str = "sonnet",
     allow_exec: bool = False,
+    agent_backend: str = "auto",
+    agent_command: str = "",
 ) -> str:
     """
     Execute the target file against a test prompt and return the output.
@@ -200,24 +208,27 @@ def execute_target(
 
 Complete the task according to the instructions above."""
 
-        try:
-            result = subprocess.run(
-                ["claude", "-p", prompt, "--model", model, "--output-format", "text"],
-                capture_output=True, text=True, timeout=180
-            )
-            if result.returncode == 0:
-                output = result.stdout.strip()
-                # Save output
-                output_file = os.path.join(output_dir, f"run_{run_index:02d}.txt")
-                with open(output_file, "w") as f:
-                    f.write(output)
-                return output
-            else:
-                # Include partial stdout for debugging
-                partial = result.stdout[:500] if result.stdout else ""
-                return f"ERROR: claude returned exit code {result.returncode}\n{result.stderr}\n--- STDOUT (partial) ---\n{partial}"
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            return f"ERROR: {e}"
+        result = run_agent_prompt(
+            prompt,
+            model=model,
+            timeout=180,
+            backend=agent_backend,
+            command_template=agent_command,
+        )
+        if result.ok:
+            output = result.stdout.strip()
+            # Save output
+            output_file = os.path.join(output_dir, f"run_{run_index:02d}.txt")
+            with open(output_file, "w") as f:
+                f.write(output)
+            return output
+
+        # Include partial stdout for debugging
+        partial = result.stdout[:500] if result.stdout else ""
+        return (
+            f"ERROR: {result.backend} returned exit code {result.returncode}\n"
+            f"{result.stderr}\n--- STDOUT (partial) ---\n{partial}"
+        )
 
     # For Python scripts: execute them (requires --allow-exec; LLM-authored code is untrusted)
     elif target_ext == ".py":
@@ -249,10 +260,19 @@ def run_eval(
     outputs: list[str],
     eval_config: dict,
     model: str = "sonnet",
+    agent_backend: str = "auto",
+    agent_command: str = "",
 ) -> dict:
     """Run the binary eval suite on a list of outputs."""
     from eval_engine import run_eval_suite
-    return run_eval_suite(outputs, eval_config["criteria"], model, verbose=False)
+    return run_eval_suite(
+        outputs,
+        eval_config["criteria"],
+        model,
+        verbose=False,
+        agent_backend=agent_backend,
+        agent_command=agent_command,
+    )
 
 
 def _sanitize_tsv_field(value) -> str:
@@ -324,6 +344,10 @@ def main():
     parser.add_argument("--allow-exec", action="store_true",
                         help="Permit executing .py targets as subprocesses. Dangerous: the loop "
                              "rewrites the target with LLM-generated code every iteration.")
+    parser.add_argument("--agent-backend", default=os.getenv("AUTORESEARCH_AGENT_BACKEND", "auto"),
+                        help="Agent CLI backend: auto, claude, hermes, or custom (default: auto)")
+    parser.add_argument("--agent-command", default=os.getenv("AUTORESEARCH_AGENT_CMD", ""),
+                        help="Custom agent command template. Supports {prompt_file}, {prompt}, and {model}.")
     args = parser.parse_args()
 
     # Sandbox: resolve --target and require it to live under --allowed-root (default: CWD).
@@ -370,6 +394,7 @@ def main():
     print(f"  Criteria: {len(eval_config.get('criteria', []))}")
     print(f"  Test prompts: {len(test_prompts)}")
     print(f"  Runs per experiment: {args.runs_per_experiment}")
+    print(f"  Agent backend: {args.agent_backend}")
     print(f"  Max score per experiment: "
           f"{len(eval_config.get('criteria', [])) * len(test_prompts) * args.runs_per_experiment}")
     print(f"{'#'*60}\n")
@@ -399,11 +424,19 @@ def main():
                 prompt_idx * args.runs_per_experiment + run_idx,
                 str(exp_runs_dir), args.execution_model,
                 allow_exec=args.allow_exec,
+                agent_backend=args.agent_backend,
+                agent_command=args.agent_command,
             )
             all_outputs.append(output)
 
     # Score baseline
-    eval_results = run_eval(all_outputs, eval_config, args.eval_model)
+    eval_results = run_eval(
+        all_outputs,
+        eval_config,
+        args.eval_model,
+        agent_backend=args.agent_backend,
+        agent_command=args.agent_command,
+    )
     best_score = eval_results["total_yes"]
     max_score = eval_results["max_score"]
 
@@ -437,6 +470,8 @@ def main():
             experiment = generate_experiment(
                 current_content, program, results_history,
                 eval_config, args.experiment_model,
+                agent_backend=args.agent_backend,
+                agent_command=args.agent_command,
             )
 
             if experiment is None:
@@ -485,6 +520,8 @@ def main():
                         prompt_idx * args.runs_per_experiment + run_idx,
                         str(exp_runs_dir), args.execution_model,
                         allow_exec=args.allow_exec,
+                        agent_backend=args.agent_backend,
+                        agent_command=args.agent_command,
                     )
                     if output.startswith("ERROR:"):
                         print(f"    ⚠️  {output}")
@@ -511,7 +548,13 @@ def main():
                 continue
 
             # Score
-            eval_results = run_eval(all_outputs, eval_config, args.eval_model)
+            eval_results = run_eval(
+                all_outputs,
+                eval_config,
+                args.eval_model,
+                agent_backend=args.agent_backend,
+                agent_command=args.agent_command,
+            )
             score = eval_results["total_yes"]
             judge_errors = eval_results.get("errors") or []
 

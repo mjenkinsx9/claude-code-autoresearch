@@ -15,10 +15,11 @@ import argparse
 import json
 import os
 import sys
-import subprocess
 import time
 from pathlib import Path
 from datetime import datetime
+
+from agent_cli import run_agent_prompt
 
 
 def load_eval_config(config_path: str) -> dict:
@@ -42,10 +43,16 @@ def load_eval_config(config_path: str) -> dict:
     return config
 
 
-def evaluate_single_output(output_text: str, criteria: list[dict], model: str = "sonnet") -> dict:
+def evaluate_single_output(
+    output_text: str,
+    criteria: list[dict],
+    model: str = "sonnet",
+    agent_backend: str = "auto",
+    agent_command: str = "",
+) -> dict:
     """
     Evaluate a single output against all binary criteria.
-    Uses claude CLI as the judge (or falls back to inline evaluation).
+    Uses the configured agent CLI as the judge, then falls back to a zero-score result.
 
     Returns dict with:
         - scores: list of {criterion, passed: bool, evidence: str}
@@ -74,25 +81,22 @@ For each criterion, answer ONLY "yes" or "no" and provide a brief evidence snipp
 
 Respond with ONLY the JSON array, no other text."""
 
-    # Try using claude CLI first
-    try:
-        result = subprocess.run(
-            ["claude", "-p", eval_prompt, "--model", model, "--output-format", "text"],
-            capture_output=True, text=True, timeout=120
+    result = run_agent_prompt(
+        eval_prompt,
+        model=model,
+        timeout=120,
+        backend=agent_backend,
+        command_template=agent_command,
+    )
+    if result.ok:
+        response = result.stdout.strip()
+    else:
+        print(
+            f"WARNING: {result.backend} judge failed with exit code "
+            f"{result.returncode}: {result.stderr[:200]}",
+            file=sys.stderr,
         )
-        if result.returncode == 0:
-            response = result.stdout.strip()
-        else:
-            # CLI failed — warn and return zero-score evaluation
-            print(f"WARNING: claude CLI failed with exit code {result.returncode}: {result.stderr[:200]}", file=sys.stderr)
-            return _fallback_eval(criteria, f"claude CLI failed (exit {result.returncode})")
-    except FileNotFoundError:
-        # claude CLI not available
-        print("WARNING: claude CLI not found — cannot perform evaluation", file=sys.stderr)
-        return _fallback_eval(criteria, "claude CLI not found")
-    except subprocess.TimeoutExpired:
-        print("WARNING: evaluation timed out after 120s", file=sys.stderr)
-        return _fallback_eval(criteria, "evaluation timed out")
+        return _fallback_eval(criteria, f"{result.backend} judge failed (exit {result.returncode})")
 
     # Parse the JSON response
     try:
@@ -156,6 +160,8 @@ def run_eval_suite(
     criteria: list[dict],
     model: str = "sonnet",
     verbose: bool = False,
+    agent_backend: str = "auto",
+    agent_command: str = "",
 ) -> dict:
     """
     Run the full eval suite across multiple outputs.
@@ -178,7 +184,13 @@ def run_eval_suite(
     for i, output in enumerate(outputs):
         if verbose:
             print(f"  Evaluating output {i+1}/{len(outputs)}...")
-        result = evaluate_single_output(output, criteria, model)
+        result = evaluate_single_output(
+            output,
+            criteria,
+            model,
+            agent_backend=agent_backend,
+            agent_command=agent_command,
+        )
         per_output.append(result)
         total_yes += result["total_yes"]
         if "error" in result:
@@ -225,6 +237,10 @@ def main():
     parser.add_argument("--model", default="sonnet", help="Model to use as judge (default: sonnet)")
     parser.add_argument("--verbose", action="store_true", help="Print detailed progress")
     parser.add_argument("--results-file", help="Path to save results JSON")
+    parser.add_argument("--agent-backend", default=os.getenv("AUTORESEARCH_AGENT_BACKEND", "auto"),
+                        help="Agent CLI backend: auto, claude, hermes, or custom (default: auto)")
+    parser.add_argument("--agent-command", default=os.getenv("AUTORESEARCH_AGENT_CMD", ""),
+                        help="Custom agent command template. Supports {prompt_file}, {prompt}, and {model}.")
     args = parser.parse_args()
 
     config = load_eval_config(args.eval_config)
@@ -247,7 +263,14 @@ def main():
     print(f"Max possible score: {len(criteria) * len(outputs)}")
     print()
 
-    results = run_eval_suite(outputs, criteria, args.model, args.verbose)
+    results = run_eval_suite(
+        outputs,
+        criteria,
+        args.model,
+        args.verbose,
+        agent_backend=args.agent_backend,
+        agent_command=args.agent_command,
+    )
 
     print(f"\n{'='*50}")
     print(f"EVAL RESULTS")
