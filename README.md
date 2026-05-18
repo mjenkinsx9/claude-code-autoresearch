@@ -1,17 +1,16 @@
 # claude-code-autoresearch
 
-**Turn [Claude Code](https://docs.anthropic.com/en/docs/claude-code) into a relentless self-improvement engine.**
+**Turn Claude Code, Hermes, or another agent CLI into a measured self-improvement engine.**
 
 Based on [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) — constraint + mechanical metric + autonomous iteration = compounding gains.
 
-[![Claude Code Skill](https://img.shields.io/badge/Claude%20Code-Skill-blue?style=flat&logo=anthropic&logoColor=white)](https://docs.anthropic.com/en/docs/claude-code)
+[![Agent Skill](https://img.shields.io/badge/Agent-Skill-blue?style=flat&logo=anthropic&logoColor=white)](https://docs.anthropic.com/en/docs/claude-code)
 [![Based on Karpathy's Autoresearch](https://img.shields.io/badge/Based%20on-Karpathy's%20Autoresearch-orange?style=flat&logo=github&logoColor=white)](https://github.com/karpathy/autoresearch)
 [![MIT License](https://img.shields.io/badge/License-MIT-green?style=flat&logo=github&logoColor=white)](LICENSE)
 
 ---
 
-_"Set the GOAL → Claude runs the LOOP → You wake up to results"_
-
+_"Set the GOAL → the agent runs the LOOP → You wake up to results"_
 _You don't need AGI. You need a goal, a metric, and a loop that never quits._
 
 ---
@@ -20,7 +19,7 @@ _You don't need AGI. You need a goal, a metric, and a loop that never quits._
 
 Give it a file to optimize, a way to measure quality, and a goal. Then walk away.
 
-Claude will **modify → test → score → keep winners → discard losers → repeat** — indefinitely, without pausing for permission.
+The configured agent CLI will **modify → test → score → keep winners → discard losers → repeat** — indefinitely for unbounded runs, or until the requested bounded count is reached.
 
 ```
   ┌─────────────────────────────────────────────────────┐
@@ -28,7 +27,7 @@ Claude will **modify → test → score → keep winners → discard losers → 
   │                                                     │
   │   1. Review current state + git history + log       │
   │   2. Pick ONE change based on what worked           │
-  │   3. Make the change + git commit                   │
+  │   3. Make one change + snapshot or commit           │
   │   4. Run verification (tests, benchmarks, scores)   │
   │   5. Score improved? → KEEP. Worse? → REVERT.       │
   │   6. Log result + repeat                            │
@@ -47,8 +46,16 @@ Claude will **modify → test → score → keep winners → discard losers → 
 # Clone the repo
 git clone https://github.com/mjenkinsx9/claude-code-autoresearch.git
 
-# Copy the skill to your Claude Code skills directory
+# Claude Code global skill install
 cp -r claude-code-autoresearch ~/.claude/skills/autoresearch
+
+# Hermes local install option
+mkdir -p ~/.hermes/skills/autoresearch
+cp -r claude-code-autoresearch/* ~/.hermes/skills/autoresearch/
+
+# Hermes + The-Library option
+# Copy the repo contents into ~/.claude/skills/library/skills/autoresearch
+# and keep ~/.claude/skills/library/skills in skills.external_dirs.
 ```
 
 **2. Run**
@@ -60,7 +67,27 @@ Goal: Improve my skill routing accuracy from 62% to 90%
 
 **3. Walk Away**
 
-Claude reads the skill, establishes a baseline, and starts iterating. One change at a time. Auto-revert on failure. Never asks for permission.
+The active agent reads the skill, establishes a baseline, and starts iterating. One change at a time. Auto-revert on failure. It does not pause mid-loop unless a guardrail or configured stop condition is hit.
+
+**4. Choose backend when running scripts directly**
+
+```bash
+# Hermes backend
+python scripts/autoresearch_loop.py \
+  --target target.md \
+  --program program.md \
+  --eval-config eval.json \
+  --agent-backend hermes \
+  --max-experiments 5
+
+# Custom backend. The command must print the agent response to stdout.
+python scripts/autoresearch_loop.py \
+  --target target.md \
+  --program program.md \
+  --eval-config eval.json \
+  --agent-backend custom \
+  --agent-command 'my-agent --prompt-file {prompt_file}'
+```
 
 ---
 
@@ -145,7 +172,8 @@ Run via:
 ```bash
 python scripts/eval_engine.py \
   --eval-config eval.json \
-  --output-dir ./outputs/
+  --output-dir ./outputs/ \
+  --agent-backend hermes
 ```
 
 ---
@@ -155,6 +183,7 @@ python scripts/eval_engine.py \
 | Script | Purpose |
 |--------|---------|
 | `scripts/autoresearch_loop.py` | Full autonomous experiment loop |
+| `scripts/agent_cli.py` | Adapter for Claude Code, Hermes, or custom agent commands |
 | `scripts/eval_engine.py` | Binary yes/no scoring against criteria |
 | `scripts/generate_dashboard.py` | HTML dashboard from results.tsv |
 
@@ -168,7 +197,7 @@ python scripts/eval_engine.py \
 | 2 | **Mechanical verification only** | No subjective "looks good." Use metrics. |
 | 3 | **Automatic rollback** | Failed changes revert instantly. No debates. |
 | 4 | **Simplicity wins** | Equal results + less code = KEEP. |
-| 5 | **Git is memory** | Every kept change committed. Agent reads history to learn. |
+| 5 | **History is memory** | Preserve `results.tsv`, snapshots, and optionally git commits so the agent can learn from prior runs. |
 | 6 | **Never pause mid-loop** | Once started, never ask for permission. The human may be asleep. |
 | 7 | **When stuck, think harder** | Re-read files, combine near-misses, try radical changes. |
 | 8 | **Guard against regressions** | Add `Guard: npm test` to prevent breaking existing behavior. |
@@ -205,7 +234,7 @@ Always preserve `results.tsv`. Never delete or overwrite it.
 claude-code-autoresearch/
 ├── README.md
 ├── LICENSE
-├── SKILL.md                          ← Main skill (drop into .claude/skills/)
+├── SKILL.md                          ← Main skill for Claude Code or Hermes
 ├── examples/
 │   ├── skill-optimization.json       ← Eval config for SKILL.md files
 │   ├── prompt-optimization.json      ← Eval config for prompt templates
@@ -218,10 +247,12 @@ claude-code-autoresearch/
 │   ├── plan-workflow.md             ← Planning wizard protocol
 │   ├── security-workflow.md         ← STRIDE + OWASP audit
 │   └── results-logging.md           ← Results log management
+├── tests.md                          ← Verification scenarios
 └── scripts/
+    ├── agent_cli.py                  ← Agent backend adapter
     ├── autoresearch_loop.py          ← Full autonomous loop
-    ├── eval_engine.py               ← Binary yes/no scoring
-    └── generate_dashboard.py        ← HTML results dashboard
+    ├── eval_engine.py                ← Binary yes/no scoring
+    └── generate_dashboard.py         ← HTML results dashboard
 ```
 
 ---
@@ -230,6 +261,7 @@ claude-code-autoresearch/
 
 - **[Andrej Karpathy](https://github.com/karpathy)** — for [autoresearch](https://github.com/karpathy/autoresearch)
 - **[Anthropic](https://anthropic.com/)** — for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and the skills system
+- **[Nous Research](https://nousresearch.com/)** — for Hermes Agent, which can run this skill through the Hermes CLI backend
 
 ---
 

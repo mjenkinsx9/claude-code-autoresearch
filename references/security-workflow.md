@@ -243,7 +243,7 @@ iteration	vector	severity	owasp	stride	confidence	location	description
 #### Phase 6: Repeat
 
 - **Unbounded:** Keep finding vulnerabilities. Never stop. Never ask.
-- **Bounded (/loop N):** After N iterations, generate final report and stop.
+- **Bounded:** After N iterations (`--max-experiments N` in the Python runner, or `/loop N` where supported), generate final report and stop.
 - **Coverage tracking:** Every 5 iterations, print coverage summary.
 
 ### Coverage Summary Format

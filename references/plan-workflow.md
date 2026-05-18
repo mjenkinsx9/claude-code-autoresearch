@@ -11,22 +11,22 @@ Convert a textual goal into a validated, ready-to-execute autoresearch configura
 
 ## Workflow
 
-### AskUserQuestion Fallback (Critical)
+### Question Tool Fallback (Critical)
 
-When running in a non-interactive context (subagent, /loop, scripted invocation), `AskUserQuestion` prompts cannot get user answers. **Always prefer accepting inline configuration from the user's prompt** over asking questions.
+When running in a non-interactive context (subagent, bounded loop, scripted invocation), question tools cannot get user answers. **Always prefer accepting inline configuration from the user's prompt** over asking questions.
 
 **Rule: Inline config wins.** If the user provides a goal, scope, metric, or verify command inline (e.g., "Goal: increase coverage"), use it directly. Do not ask confirmatory questions.
 
-**When inline answers are incomplete**, infer the missing pieces from context (codebase analysis, Forge project info). Choose the recommended option from the AskUserQuestion choices. **Do not skip phases or leave configuration incomplete.**
+**When inline answers are incomplete**, infer the missing pieces from context and codebase analysis. Choose the safest recommended option from the available choices. **Do not skip phases or leave configuration incomplete.**
 
-**Do not print "requires user input" and stall.** If an AskUserQuestion prompt is presented but the user doesn't answer within the context, make the best inference and proceed. Log what you inferred.
+**Do not print "requires user input" and stall.** If a question prompt cannot be answered in the current context, make the best safe inference and proceed. Log what you inferred.
 
 ### Phase 1: Capture Goal
 
 If no goal provided, ask:
 
 ```
-AskUserQuestion:
+Question prompt:
   question: "What do you want to improve? Describe your goal in plain language."
   header: "Goal"
   options:
@@ -49,14 +49,14 @@ If user provides goal text directly, skip to Phase 2.
 3. Detect existing tooling: test runner, linter, bundler, benchmark scripts
 4. Infer likely metric candidates from goal + tooling
 
-**Forge integration:** Call `forge_project_info` MCP tool to auto-detect project type, test runner, lint command, and build command. Use these to pre-populate metric suggestions.
+**Optional project introspection:** If an MCP or local tool can detect project type, test runner, lint command, and build command, use it to pre-populate metric suggestions. Otherwise inspect project files directly.
 
 ### Phase 3: Define Scope
 
 Present scope options based on codebase analysis:
 
 ```
-AskUserQuestion:
+Question prompt:
   question: "Which files should autoresearch be allowed to modify?"
   header: "Scope"
   options:
@@ -80,7 +80,7 @@ This is the critical step. The metric must be **mechanical** — extractable fro
 Present metric options based on goal + tooling:
 
 ```
-AskUserQuestion:
+Question prompt:
   question: "What number tells you if things got better? Pick the mechanical metric."
   header: "Metric"
   options:
@@ -108,7 +108,7 @@ If metric fails validation, explain why and suggest alternatives. **Do not proce
 Ask if the user wants a guard command to prevent regressions:
 
 ```
-AskUserQuestion:
+Question prompt:
   question: "Do you want a guard command? This is a safety net that must ALWAYS pass -- it prevents breaking existing behavior while optimizing."
   header: "Guard"
   options:
@@ -132,7 +132,7 @@ AskUserQuestion:
 ### Phase 5: Define Direction
 
 ```
-AskUserQuestion:
+Question prompt:
   question: "Is a higher or lower number better for your metric?"
   header: "Direction"
   options:
@@ -152,7 +152,7 @@ Construct the verification command that:
 Present the constructed command:
 
 ```
-AskUserQuestion:
+Question prompt:
   question: "This is the verify command I'll run each iteration. Does this look right?"
   header: "Verify"
   options:
@@ -212,7 +212,7 @@ If no guard was set, omit the Guard line from the output.
 Then ask:
 
 ```
-AskUserQuestion:
+Question prompt:
   question: "Configuration validated. How do you want to run it?"
   header: "Launch"
   options:
@@ -225,7 +225,7 @@ AskUserQuestion:
 ```
 
 If "Launch now -- unlimited": invoke `/autoresearch` with the configuration.
-If "Launch now -- bounded": ask for iteration count, then invoke `/loop N /autoresearch`.
+If "Launch now -- bounded": ask for iteration count, then run the Python runner with `--max-experiments N` or invoke `/loop N /autoresearch` when the current agent supports that slash-command pattern.
 If "Copy config only": output the ready-to-paste command block and stop.
 
 ## Metric Suggestion Database

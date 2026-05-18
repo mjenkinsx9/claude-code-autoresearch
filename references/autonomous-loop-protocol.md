@@ -7,7 +7,7 @@ Detailed protocol for the autoresearch iteration loop. SKILL.md has the summary;
 Autoresearch supports two loop modes:
 
 - **Unbounded (default):** Loop forever until manually interrupted (`Ctrl+C`)
-- **Bounded:** Loop exactly N times when chained with `/loop N` (requires Claude Code v1.0.32+)
+- **Bounded:** Loop exactly N experiments with `--max-experiments N` in the Python runner. In Claude Code, `/loop N /autoresearch` can be used when available.
 
 When bounded, track `current_iteration` against `max_iterations`. After the final iteration, print a summary and stop.
 
@@ -49,14 +49,17 @@ Pick the NEXT change. Priority order:
 - The change should be explainable in one sentence
 - Write the description BEFORE making the change (forces clarity)
 
-## Phase 4: Commit (Before Verification)
+## Phase 4: Snapshot or Commit (Before Verification)
+
+The Python runner writes backups and snapshots automatically. For manual loops, create a checkpoint before verification. A git commit is acceptable on disposable branches, but do not commit experimental changes to shared branches unless that is part of the agreed workflow.
 
 ```bash
+# Manual-loop option on a disposable branch
 git add <changed-files>
 git commit -m "experiment: <one-sentence description>"
 ```
 
-Commit BEFORE running verification so rollback is clean: `git reset --hard HEAD~1`
+Rollback must return to the previous kept state. With git, use `git reset --hard HEAD~1`. With the Python runner, use the backup/snapshot files it created.
 
 ## Phase 5: Verify (Mechanical Only)
 
@@ -113,33 +116,33 @@ When the guard fails but the metric improved, the optimization idea may still be
 ```
 IF metric_improved AND (no guard OR guard_passed):
     STATUS = "keep"
-    # Do nothing — commit stays
+    # Do nothing — snapshot/commit stays
 ELIF metric_improved AND guard_failed:
-    git reset --hard HEAD~1
+    rollback to previous kept state
     # Rework the optimization (max 2 attempts)
     FOR attempt IN 1..2:
         Analyze guard output -> rework implementation (NOT tests)
-        git add + commit reworked version
+        save a new snapshot/commit for the reworked version
         Re-run verify
         IF metric_improved:
             Re-run guard
             IF guard_passed:
                 STATUS = "keep (reworked)"
                 BREAK
-        git reset --hard HEAD~1
+        rollback to previous kept state
     IF still failing after 2 attempts:
         STATUS = "discard"
         REASON = "guard failed, could not rework optimization"
 ELIF metric_same_or_worse:
     STATUS = "discard"
-    git reset --hard HEAD~1
+    rollback to previous kept state
 ELIF crashed:
     # Attempt fix (max 3 tries)
     IF fixable:
         Fix -> re-commit -> re-verify -> re-guard
     ELSE:
         STATUS = "crash"
-        git reset --hard HEAD~1
+        rollback to previous kept state
 ```
 
 **Simplicity override:** If metric barely improved (+<0.1%) but change adds significant complexity, treat as "discard". If metric unchanged but code is simpler, treat as "keep".
@@ -161,7 +164,7 @@ iteration  commit   metric   status   description
 
 Go to Phase 1. **NEVER STOP. NEVER ASK IF YOU SHOULD CONTINUE.**
 
-### Bounded Mode (with /loop N)
+### Bounded Mode
 
 ```
 IF current_iteration < max_iterations:

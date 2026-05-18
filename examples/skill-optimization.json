@@ -1,6 +1,6 @@
 {
   "name": "Skill Optimization Example",
-  "description": "Example eval config for optimizing a Claude skill (SKILL.md)",
+  "description": "Example eval config for optimizing an agent skill (SKILL.md)",
   "target_type": "skill",
   "criteria": [
     {
