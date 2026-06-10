@@ -447,6 +447,19 @@ def main():
         agent_backend=args.agent_backend,
         agent_command=args.agent_command,
     )
+    baseline_crashes = sum(1 for o in all_outputs if o.startswith("ERROR:"))
+    baseline_judge_errors = eval_results.get("errors") or []
+    if baseline_crashes or baseline_judge_errors:
+        print(
+            f"ERROR: baseline is not trustworthy — "
+            f"{baseline_crashes}/{len(all_outputs)} runs crashed, "
+            f"{len(baseline_judge_errors)} judge error(s). "
+            f"Fix the agent backend or eval config before starting the loop.",
+            file=sys.stderr,
+        )
+        if baseline_judge_errors:
+            print(f"First judge error: {baseline_judge_errors[0]}", file=sys.stderr)
+        sys.exit(2)
     best_score = eval_results["total_yes"]
     max_score = eval_results["max_score"]
 
