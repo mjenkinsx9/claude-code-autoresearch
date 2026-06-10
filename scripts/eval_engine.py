@@ -120,10 +120,17 @@ Respond with ONLY the JSON array, no other text."""
                     break
 
         scores = json.loads(json_str)
+        if not isinstance(scores, list):
+            return _fallback_eval(criteria, "judge returned non-list JSON")
 
-        # Validate passed field is actually a boolean
+        if scores and not any(isinstance(s, dict) for s in scores):
+            return _fallback_eval(criteria, "judge returned a list with no score objects")
+
+        # Clamp to the criteria count and tolerate malformed entries
         total_yes = 0
-        for s in scores:
+        for s in scores[: len(criteria)]:
+            if not isinstance(s, dict):
+                continue
             passed = s.get("passed", False)
             if isinstance(passed, bool):
                 total_yes += 1 if passed else 0
@@ -137,7 +144,7 @@ Respond with ONLY the JSON array, no other text."""
             "total_yes": total_yes,
             "total_criteria": len(criteria),
         }
-    except (json.JSONDecodeError, IndexError):
+    except (json.JSONDecodeError, IndexError, TypeError, AttributeError):
         return _fallback_eval(criteria, f"failed to parse eval response: {response[:200]}")
 
 
