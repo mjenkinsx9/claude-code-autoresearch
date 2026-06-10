@@ -537,7 +537,6 @@ def main():
                     break
                 time.sleep(5)
                 continue
-            consecutive_failures = 0
 
             description = experiment.get("description", "unknown change")
             new_content = experiment.get("new_content", "")
@@ -600,6 +599,10 @@ def main():
                 revert_target(args.target, backup_path)
                 save_snapshot(args.target, str(snapshots_dir), experiment_num, "crash")
                 print_result(entry, best_score)
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    print(f"\nFATAL: {MAX_CONSECUTIVE_FAILURES} consecutive crashed experiments. Stopping.")
+                    break
                 continue
 
             # Score
@@ -665,6 +668,14 @@ def main():
             eval_output_path = exp_runs_dir / "eval_results.json"
             with open(eval_output_path, "w", encoding="utf-8") as f:
                 json.dump(eval_results, f, indent=2)
+
+            if status == "crash":
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    print(f"\nFATAL: {MAX_CONSECUTIVE_FAILURES} consecutive crashed experiments. Stopping.")
+                    break
+            else:
+                consecutive_failures = 0
 
     except KeyboardInterrupt:
         print(f"\n\n{'='*60}")
