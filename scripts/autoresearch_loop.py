@@ -248,7 +248,8 @@ Complete the task according to the instructions above."""
             result = subprocess.run(
                 [sys.executable, target_path],
                 input=test_prompt,
-                capture_output=True, text=True, timeout=120
+                capture_output=True, text=True, timeout=120,
+                encoding="utf-8", errors="replace",
             )
             output = result.stdout + result.stderr
             output_file = os.path.join(output_dir, f"run_{run_index:02d}.txt")
