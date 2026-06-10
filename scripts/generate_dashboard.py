@@ -33,7 +33,7 @@ def _safe_json_for_script(obj) -> str:
 def load_results(results_path: str) -> list[dict]:
     """Load results from TSV file."""
     results = []
-    with open(results_path) as f:
+    with open(results_path, encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter="\t")
         for row in reader:
             try:
@@ -316,7 +316,7 @@ def main():
     results = load_results(args.results)
     html = generate_html(results, args.title)
 
-    with open(args.output, "w") as f:
+    with open(args.output, "w", encoding="utf-8") as f:
         f.write(html)
 
     print(f"Dashboard generated: {args.output}")

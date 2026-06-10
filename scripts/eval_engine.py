@@ -25,7 +25,7 @@ from agent_cli import run_agent_prompt
 def load_eval_config(config_path: str) -> dict:
     """Load eval configuration from JSON file."""
     try:
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             config = json.load(f)
     except FileNotFoundError:
         print(f"Error: eval config file not found: '{config_path}'")
@@ -221,7 +221,7 @@ def load_outputs_from_dir(output_dir: str) -> list[str]:
 
     for f in sorted(output_path.iterdir()):
         if f.is_file() and f.suffix in (".txt", ".md", ".html", ".json", ".py", ".jsx"):
-            outputs.append(f.read_text())
+            outputs.append(f.read_text(encoding="utf-8"))
 
     if not outputs:
         print(f"Warning: no output files found in '{output_dir}'")
@@ -295,7 +295,7 @@ def main():
 
     # Save results
     if args.results_file:
-        with open(args.results_file, "w") as f:
+        with open(args.results_file, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2)
         print(f"\nResults saved to {args.results_file}")
 
