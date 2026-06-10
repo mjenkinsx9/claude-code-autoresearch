@@ -12,3 +12,6 @@ snapshots/
 backups/
 runs/
 *.tsv
+.pytest_cache/
+.serena/
+.venv/
