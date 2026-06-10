@@ -43,9 +43,23 @@ def _model_is_explicit(model: str | None) -> bool:
     )
 
 
+def _quote_arg(value: str) -> str:
+    """Quote one argument for the platform shell used by shell=True.
+
+    shlex.quote produces POSIX single quotes, which cmd.exe passes through
+    literally — use cmd-style double quoting on Windows instead.
+    """
+    if os.name == "nt":
+        return subprocess.list2cmdline([value])
+    return shlex.quote(value)
+
+
 def _run_command(cmd: list[str], timeout: int, backend: str) -> AgentResult:
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
         return AgentResult(
             backend=backend,
             returncode=result.returncode,
@@ -88,11 +102,14 @@ def _run_custom_command(prompt: str, model: str, timeout: int, template: str) ->
             prompt_file = fh.name
 
         rendered = template.format(
-            prompt=shlex.quote(prompt),
-            prompt_file=shlex.quote(prompt_file),
-            model=shlex.quote(model or ""),
+            prompt=_quote_arg(prompt),
+            prompt_file=_quote_arg(prompt_file),
+            model=_quote_arg(model or ""),
         )
-        result = subprocess.run(rendered, shell=True, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(
+            rendered, shell=True, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
         return AgentResult(
             backend="custom",
             returncode=result.returncode,

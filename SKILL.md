@@ -217,6 +217,7 @@ Notes:
 - `--allowed-root` defaults to the current working directory.
 - `.py` targets require `--allow-exec` because the loop rewrites and executes that file.
 - Do not pass `--allow-exec` unless the sandbox and target are intentionally disposable.
+- `--guard "<command>"` runs after every keep-eligible experiment (score improvement, or score tie with smaller file); if it exits non-zero the change is discarded.
 
 ## Security Mode
 

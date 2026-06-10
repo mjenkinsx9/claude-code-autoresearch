@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -28,21 +29,28 @@ from pathlib import Path
 from agent_cli import run_agent_prompt
 
 
+def _force_utf8_output():
+    """Windows consoles default to cp1252; emoji in status output must not kill the loop."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def load_config(eval_config_path: str) -> dict:
     """Load the eval configuration."""
-    with open(eval_config_path) as f:
+    with open(eval_config_path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def load_program(program_path: str) -> str:
     """Load the program.md instructions."""
-    with open(program_path) as f:
+    with open(program_path, encoding="utf-8") as f:
         return f.read()
 
 
 def read_target(target_path: str) -> str:
     """Read the current state of the target file."""
-    with open(target_path) as f:
+    with open(target_path, encoding="utf-8") as f:
         return f.read()
 
 
@@ -52,7 +60,7 @@ def write_target(target_path: str, content: str):
         raise ValueError(f"Invalid content to write: empty or non-string")
     # Validate UTF-8 encoding
     content.encode("utf-8")
-    with open(target_path, "w") as f:
+    with open(target_path, "w", encoding="utf-8") as f:
         f.write(content)
 
 
@@ -74,6 +82,37 @@ def revert_target(target_path: str, backup_path: str):
     except (IOError, OSError) as e:
         print(f"WARNING: Revert failed: {e}", file=sys.stderr)
         raise
+
+
+def run_guard(guard_cmd: str, timeout: int = 600) -> bool:
+    """Run the optional guard command. Pass = exit 0. No guard = pass.
+
+    shell=True is intentional: the guard is an operator-supplied shell command
+    from the --guard CLI flag (e.g. "npm test && npx tsc --noEmit"), the same
+    trust level as the existing custom-backend command template. It must NEVER
+    be built from LLM output or target-file content.
+    """
+    if not guard_cmd:
+        return True
+    try:
+        result = subprocess.run(
+            guard_cmd, shell=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  Guard timed out after {timeout}s — treating as failure", file=sys.stderr)
+        return False
+    if result.returncode != 0:
+        tail = (result.stdout + result.stderr)[-500:]
+        print(f"  Guard failed (exit {result.returncode}):\n{tail}", file=sys.stderr)
+    return result.returncode == 0
+
+
+def resolve_runs_per_experiment(cli_value, eval_config: dict) -> int:
+    """CLI flag > eval config 'runs_per_experiment' > default 5."""
+    if cli_value is not None:
+        return cli_value
+    return int(eval_config.get("runs_per_experiment", 5))
 
 
 def save_snapshot(target_path: str, snapshot_dir: str, experiment_num: int, status: str):
@@ -219,7 +258,7 @@ Complete the task according to the instructions above."""
             output = result.stdout.strip()
             # Save output
             output_file = os.path.join(output_dir, f"run_{run_index:02d}.txt")
-            with open(output_file, "w") as f:
+            with open(output_file, "w", encoding="utf-8") as f:
                 f.write(output)
             return output
 
@@ -240,11 +279,12 @@ Complete the task according to the instructions above."""
             result = subprocess.run(
                 [sys.executable, target_path],
                 input=test_prompt,
-                capture_output=True, text=True, timeout=120
+                capture_output=True, text=True, timeout=120,
+                encoding="utf-8", errors="replace",
             )
             output = result.stdout + result.stderr
             output_file = os.path.join(output_dir, f"run_{run_index:02d}.txt")
-            with open(output_file, "w") as f:
+            with open(output_file, "w", encoding="utf-8") as f:
                 f.write(output)
             return output
         except subprocess.TimeoutExpired:
@@ -289,7 +329,7 @@ def _sanitize_tsv_field(value) -> str:
 def append_results_tsv(results_file: str, entry: dict):
     """Append an entry to results.tsv."""
     if not os.path.exists(results_file):
-        with open(results_file, "w") as f:
+        with open(results_file, "w", encoding="utf-8") as f:
             f.write("experiment\tscore\tmax_score\tstatus\tdescription\ttimestamp\n")
 
     fields = [
@@ -300,7 +340,7 @@ def append_results_tsv(results_file: str, entry: dict):
         _sanitize_tsv_field(entry["description"]),
         _sanitize_tsv_field(entry["timestamp"]),
     ]
-    with open(results_file, "a") as f:
+    with open(results_file, "a", encoding="utf-8") as f:
         f.write("\t".join(fields) + "\n")
 
 
@@ -323,12 +363,14 @@ def print_result(entry: dict, best_score: int):
 
 
 def main():
+    _force_utf8_output()
     parser = argparse.ArgumentParser(description="Autoresearch Loop Runner")
     parser.add_argument("--target", required=True, help="Path to target file to optimize")
     parser.add_argument("--program", required=True, help="Path to program.md instructions")
     parser.add_argument("--eval-config", required=True, help="Path to eval config JSON")
-    parser.add_argument("--runs-per-experiment", type=int, default=5,
-                        help="Number of test runs per experiment (default: 5)")
+    parser.add_argument("--runs-per-experiment", type=int, default=None,
+                        help="Number of test runs per experiment "
+                             "(default: eval config 'runs_per_experiment', else 5)")
     parser.add_argument("--output-dir", default="./autoresearch-results/",
                         help="Directory for results and snapshots")
     parser.add_argument("--experiment-model", default="opus",
@@ -344,6 +386,9 @@ def main():
     parser.add_argument("--allow-exec", action="store_true",
                         help="Permit executing .py targets as subprocesses. Dangerous: the loop "
                              "rewrites the target with LLM-generated code every iteration.")
+    parser.add_argument("--guard", default="",
+                        help="Optional command that must exit 0 for any change to be kept "
+                             "(e.g. 'npm test'). Failing the guard discards the experiment.")
     parser.add_argument("--agent-backend", default=os.getenv("AUTORESEARCH_AGENT_BACKEND", "auto"),
                         help="Agent CLI backend: auto, claude, hermes, or custom (default: auto)")
     parser.add_argument("--agent-command", default=os.getenv("AUTORESEARCH_AGENT_CMD", ""),
@@ -381,6 +426,9 @@ def main():
 
     # Load configuration
     eval_config = load_config(args.eval_config)
+    args.runs_per_experiment = resolve_runs_per_experiment(
+        args.runs_per_experiment, eval_config
+    )
     program = load_program(args.program)
     test_prompts = eval_config.get("test_prompts", ["Default test"])
 
@@ -437,8 +485,26 @@ def main():
         agent_backend=args.agent_backend,
         agent_command=args.agent_command,
     )
+    baseline_crashes = sum(1 for o in all_outputs if o.startswith("ERROR:"))
+    baseline_judge_errors = eval_results.get("errors") or []
+    if baseline_crashes or baseline_judge_errors:
+        print(
+            f"ERROR: baseline is not trustworthy — "
+            f"{baseline_crashes}/{len(all_outputs)} runs crashed, "
+            f"{len(baseline_judge_errors)} judge error(s). "
+            f"Fix the agent backend or eval config before starting the loop.",
+            file=sys.stderr,
+        )
+        if baseline_judge_errors:
+            print(f"First judge error: {baseline_judge_errors[0]}", file=sys.stderr)
+        sys.exit(2)
     best_score = eval_results["total_yes"]
     max_score = eval_results["max_score"]
+
+    if args.guard and not run_guard(args.guard):
+        print("ERROR: --guard command fails on the unmodified target. "
+              "Fix the guard before starting the loop.", file=sys.stderr)
+        sys.exit(2)
 
     entry = {
         "experiment": f"{experiment_num:03d}",
@@ -482,7 +548,6 @@ def main():
                     break
                 time.sleep(5)
                 continue
-            consecutive_failures = 0
 
             description = experiment.get("description", "unknown change")
             new_content = experiment.get("new_content", "")
@@ -545,6 +610,10 @@ def main():
                 revert_target(args.target, backup_path)
                 save_snapshot(args.target, str(snapshots_dir), experiment_num, "crash")
                 print_result(entry, best_score)
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    print(f"\nFATAL: {MAX_CONSECUTIVE_FAILURES} consecutive crashed experiments. Stopping.")
+                    break
                 continue
 
             # Score
@@ -570,13 +639,25 @@ def main():
                 revert_target(args.target, backup_path)
                 save_snapshot(args.target, str(snapshots_dir), experiment_num, "crash")
             elif score > best_score:
-                status = "keep"
-                best_score = score
-                save_snapshot(args.target, str(snapshots_dir), experiment_num, "keep")
+                if run_guard(args.guard):
+                    status = "keep"
+                    best_score = score
+                    save_snapshot(args.target, str(snapshots_dir), experiment_num, "keep")
+                else:
+                    status = "discard"
+                    description = f"{description} (guard failed)"
+                    revert_target(args.target, backup_path)
+                    save_snapshot(args.target, str(snapshots_dir), experiment_num, "discard")
             elif score == best_score and len(new_content) < len(current_content):
                 # Tie on score but simpler: per SKILL.md "Equal results + less code = KEEP"
-                status = "keep"
-                save_snapshot(args.target, str(snapshots_dir), experiment_num, "keep")
+                if run_guard(args.guard):
+                    status = "keep"
+                    save_snapshot(args.target, str(snapshots_dir), experiment_num, "keep")
+                else:
+                    status = "discard"
+                    description = f"{description} (guard failed)"
+                    revert_target(args.target, backup_path)
+                    save_snapshot(args.target, str(snapshots_dir), experiment_num, "discard")
             else:
                 status = "discard"
                 revert_target(args.target, backup_path)
@@ -596,8 +677,16 @@ def main():
 
             # Save detailed eval results
             eval_output_path = exp_runs_dir / "eval_results.json"
-            with open(eval_output_path, "w") as f:
+            with open(eval_output_path, "w", encoding="utf-8") as f:
                 json.dump(eval_results, f, indent=2)
+
+            if status == "crash":
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    print(f"\nFATAL: {MAX_CONSECUTIVE_FAILURES} consecutive crashed experiments. Stopping.")
+                    break
+            else:
+                consecutive_failures = 0
 
     except KeyboardInterrupt:
         print(f"\n\n{'='*60}")

@@ -56,7 +56,7 @@ AUTONOMOUS LOOP:
 
 ## Persona Composition
 
-Adopt the `persona-security-expert` skill's mindset for all analysis in this audit. Reference that skill for the full OWASP Top 10 checklist and STRIDE threat modeling methodology. Do not duplicate those checklists — compose with the existing persona.
+If a security-persona skill (e.g. `persona-security-expert`) is installed in the current agent, adopt its mindset and checklists. Otherwise use the STRIDE table in Step 4 and the OWASP Top 10 sweep below — this file is self-contained and does not require any other skill.
 
 ## Setup Phase — Threat Model Generation
 
