@@ -45,3 +45,14 @@ def test_run_guard_passes_and_fails():
     assert run_guard(f'"{sys.executable}" -c "import sys; sys.exit(0)"') is True
     assert run_guard(f'"{sys.executable}" -c "import sys; sys.exit(1)"') is False
     assert run_guard(f'"{sys.executable}" -c "import time; time.sleep(5)"', timeout=1) is False
+
+
+def test_resolve_runs_per_experiment():
+    from autoresearch_loop import resolve_runs_per_experiment
+
+    # CLI flag wins
+    assert resolve_runs_per_experiment(3, {"runs_per_experiment": 7}) == 3
+    # Config used when CLI flag absent
+    assert resolve_runs_per_experiment(None, {"runs_per_experiment": 7}) == 7
+    # Default when neither given
+    assert resolve_runs_per_experiment(None, {}) == 5
