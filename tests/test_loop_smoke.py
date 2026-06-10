@@ -69,3 +69,29 @@ def test_broken_backend_aborts_at_baseline(tmp_path):
     results_tsv = tmp_path / "autoresearch-results" / "results.tsv"
     if results_tsv.exists():
         assert "keep" not in results_tsv.read_text(encoding="utf-8")
+
+
+def test_consecutive_crashes_stop_the_loop(tmp_path):
+    """A backend whose executions always fail must not loop forever."""
+    _write_fixtures(tmp_path)
+    cmd = [
+        sys.executable, str(LOOP),
+        "--target", "target.md",
+        "--program", "program.md",
+        "--eval-config", "eval.json",
+        "--runs-per-experiment", "1",
+        "--max-experiments", "20",
+        "--agent-backend", "custom",
+        "--agent-command", f'"{sys.executable}" "{STUB}" {{prompt_file}} exec-error',
+    ]
+    result = subprocess.run(
+        cmd, cwd=tmp_path, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=600,
+    )
+    combined = result.stdout + result.stderr
+    # Baseline succeeds (judge role still works), then every experiment crashes.
+    # The loop must stop on consecutive crashes well before 20 experiments.
+    assert "consecutive" in combined.lower()
+    results_tsv = tmp_path / "autoresearch-results" / "results.tsv"
+    lines = results_tsv.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) <= 8  # header + baseline + at most 5 crash rows + margin
