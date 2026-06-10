@@ -136,6 +136,8 @@ experiment    score    max_score    status    description
 
 ### Mechanical Mode — Bash Command Output (Default)
 
+> Mechanical mode is for agent-driven loops (Claude Code/Hermes following this skill's protocol). The bundled Python runner (`scripts/autoresearch_loop.py`) currently implements Binary Eval Mode only.
+
 A shell command that outputs a parseable number. The loop maximizes it.
 
 ```bash
@@ -200,7 +202,7 @@ python scripts/eval_engine.py \
 | 5 | **History is memory** | Preserve `results.tsv`, snapshots, and optionally git commits so the agent can learn from prior runs. |
 | 6 | **Never pause mid-loop** | Once started, never ask for permission. The human may be asleep. |
 | 7 | **When stuck, think harder** | Re-read files, combine near-misses, try radical changes. |
-| 8 | **Guard against regressions** | Add `Guard: npm test` to prevent breaking existing behavior. |
+| 8 | **Guard against regressions** | Add `Guard: npm test` (or `--guard "npm test"` with the Python runner) to prevent breaking existing behavior. |
 
 ---
 

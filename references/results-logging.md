@@ -4,13 +4,37 @@ Track every iteration in a structured log. Enables pattern recognition and preve
 
 ## Log Format (TSV)
 
-Create `autoresearch-results.tsv` in the working directory (gitignored):
+There are two TSV schemas depending on how you run autoresearch. Pick the one
+that matches your mode — the dashboard (`scripts/generate_dashboard.py`) only
+parses the script schema.
+
+### Script schema (written by `scripts/autoresearch_loop.py`)
+
+`autoresearch-results/results.tsv`:
+
+```tsv
+experiment	score	max_score	status	description	timestamp
+001	28	48	keep	baseline — original target file	2026-06-10T08:00:00
+002	35	48	keep	added explicit CTA instruction	2026-06-10T08:14:02
+003	33	48	discard	word limit broke tone	2026-06-10T08:31:40
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| experiment | string | Zero-padded sequential number (001, 002, ...) |
+| score | int | Total yes answers across all runs and criteria |
+| max_score | int | criteria × test prompts × runs per experiment |
+| status | enum | `keep`, `discard`, `crash` |
+| description | string | One-sentence description of what was tried |
+| timestamp | string | ISO 8601 |
+
+### Manual-loop schema (agent-driven loops without the Python runner)
+
+`autoresearch-results.tsv` in the working directory:
 
 ```tsv
 iteration	commit	metric	delta	guard	status	description
 ```
-
-### Columns
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -22,7 +46,7 @@ iteration	commit	metric	delta	guard	status	description
 | status | enum | `baseline`, `keep`, `discard`, `crash` |
 | description | string | One-sentence description of what was tried |
 
-### Example
+### Example (manual-loop schema)
 
 ```tsv
 iteration	commit	metric	delta	guard	status	description
