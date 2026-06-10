@@ -45,7 +45,10 @@ def _model_is_explicit(model: str | None) -> bool:
 
 def _run_command(cmd: list[str], timeout: int, backend: str) -> AgentResult:
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
         return AgentResult(
             backend=backend,
             returncode=result.returncode,
@@ -92,7 +95,10 @@ def _run_custom_command(prompt: str, model: str, timeout: int, template: str) ->
             prompt_file=shlex.quote(prompt_file),
             model=shlex.quote(model or ""),
         )
-        result = subprocess.run(rendered, shell=True, capture_output=True, text=True, timeout=timeout)
+        result = subprocess.run(
+            rendered, shell=True, capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
         return AgentResult(
             backend="custom",
             returncode=result.returncode,

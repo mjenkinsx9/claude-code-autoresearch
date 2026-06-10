@@ -29,21 +29,28 @@ from pathlib import Path
 from agent_cli import run_agent_prompt
 
 
+def _force_utf8_output():
+    """Windows consoles default to cp1252; emoji in status output must not kill the loop."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def load_config(eval_config_path: str) -> dict:
     """Load the eval configuration."""
-    with open(eval_config_path) as f:
+    with open(eval_config_path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def load_program(program_path: str) -> str:
     """Load the program.md instructions."""
-    with open(program_path) as f:
+    with open(program_path, encoding="utf-8") as f:
         return f.read()
 
 
 def read_target(target_path: str) -> str:
     """Read the current state of the target file."""
-    with open(target_path) as f:
+    with open(target_path, encoding="utf-8") as f:
         return f.read()
 
 
@@ -53,7 +60,7 @@ def write_target(target_path: str, content: str):
         raise ValueError(f"Invalid content to write: empty or non-string")
     # Validate UTF-8 encoding
     content.encode("utf-8")
-    with open(target_path, "w") as f:
+    with open(target_path, "w", encoding="utf-8") as f:
         f.write(content)
 
 
@@ -220,7 +227,7 @@ Complete the task according to the instructions above."""
             output = result.stdout.strip()
             # Save output
             output_file = os.path.join(output_dir, f"run_{run_index:02d}.txt")
-            with open(output_file, "w") as f:
+            with open(output_file, "w", encoding="utf-8") as f:
                 f.write(output)
             return output
 
@@ -245,7 +252,7 @@ Complete the task according to the instructions above."""
             )
             output = result.stdout + result.stderr
             output_file = os.path.join(output_dir, f"run_{run_index:02d}.txt")
-            with open(output_file, "w") as f:
+            with open(output_file, "w", encoding="utf-8") as f:
                 f.write(output)
             return output
         except subprocess.TimeoutExpired:
@@ -290,7 +297,7 @@ def _sanitize_tsv_field(value) -> str:
 def append_results_tsv(results_file: str, entry: dict):
     """Append an entry to results.tsv."""
     if not os.path.exists(results_file):
-        with open(results_file, "w") as f:
+        with open(results_file, "w", encoding="utf-8") as f:
             f.write("experiment\tscore\tmax_score\tstatus\tdescription\ttimestamp\n")
 
     fields = [
@@ -301,7 +308,7 @@ def append_results_tsv(results_file: str, entry: dict):
         _sanitize_tsv_field(entry["description"]),
         _sanitize_tsv_field(entry["timestamp"]),
     ]
-    with open(results_file, "a") as f:
+    with open(results_file, "a", encoding="utf-8") as f:
         f.write("\t".join(fields) + "\n")
 
 
@@ -324,6 +331,7 @@ def print_result(entry: dict, best_score: int):
 
 
 def main():
+    _force_utf8_output()
     parser = argparse.ArgumentParser(description="Autoresearch Loop Runner")
     parser.add_argument("--target", required=True, help="Path to target file to optimize")
     parser.add_argument("--program", required=True, help="Path to program.md instructions")
@@ -597,7 +605,7 @@ def main():
 
             # Save detailed eval results
             eval_output_path = exp_runs_dir / "eval_results.json"
-            with open(eval_output_path, "w") as f:
+            with open(eval_output_path, "w", encoding="utf-8") as f:
                 json.dump(eval_results, f, indent=2)
 
     except KeyboardInterrupt:
