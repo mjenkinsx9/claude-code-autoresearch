@@ -21,6 +21,7 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest tests/ -v
       - name: CLI help smoke checks
+        shell: bash
         run: |
           python scripts/autoresearch_loop.py --help
           python scripts/eval_engine.py --help
