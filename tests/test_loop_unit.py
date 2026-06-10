@@ -35,3 +35,12 @@ def test_force_utf8_output_reconfigures_streams():
     finally:
         sys.stdout = saved_stdout
         sys.stderr = saved_stderr
+
+
+def test_run_guard_passes_and_fails():
+    import sys
+    from autoresearch_loop import run_guard
+
+    assert run_guard("") is True  # no guard configured
+    assert run_guard(f'"{sys.executable}" -c "import sys; sys.exit(0)"') is True
+    assert run_guard(f'"{sys.executable}" -c "import sys; sys.exit(1)"') is False

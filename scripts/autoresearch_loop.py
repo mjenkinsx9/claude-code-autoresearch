@@ -84,6 +84,30 @@ def revert_target(target_path: str, backup_path: str):
         raise
 
 
+def run_guard(guard_cmd: str, timeout: int = 600) -> bool:
+    """Run the optional guard command. Pass = exit 0. No guard = pass.
+
+    shell=True is intentional: the guard is an operator-supplied shell command
+    from the --guard CLI flag (e.g. "npm test && npx tsc --noEmit"), the same
+    trust level as the existing custom-backend command template. It must NEVER
+    be built from LLM output or target-file content.
+    """
+    if not guard_cmd:
+        return True
+    try:
+        result = subprocess.run(
+            guard_cmd, shell=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  Guard timed out after {timeout}s — treating as failure", file=sys.stderr)
+        return False
+    if result.returncode != 0:
+        tail = (result.stdout + result.stderr)[-500:]
+        print(f"  Guard failed (exit {result.returncode}):\n{tail}", file=sys.stderr)
+    return result.returncode == 0
+
+
 def save_snapshot(target_path: str, snapshot_dir: str, experiment_num: int, status: str):
     """Save a snapshot of the target file after experiment."""
     snapshot_path = os.path.join(snapshot_dir, f"experiment_{experiment_num:03d}_{status}.md")
@@ -354,6 +378,9 @@ def main():
     parser.add_argument("--allow-exec", action="store_true",
                         help="Permit executing .py targets as subprocesses. Dangerous: the loop "
                              "rewrites the target with LLM-generated code every iteration.")
+    parser.add_argument("--guard", default="",
+                        help="Optional command that must exit 0 for any change to be kept "
+                             "(e.g. 'npm test'). Failing the guard discards the experiment.")
     parser.add_argument("--agent-backend", default=os.getenv("AUTORESEARCH_AGENT_BACKEND", "auto"),
                         help="Agent CLI backend: auto, claude, hermes, or custom (default: auto)")
     parser.add_argument("--agent-command", default=os.getenv("AUTORESEARCH_AGENT_CMD", ""),
@@ -462,6 +489,11 @@ def main():
         sys.exit(2)
     best_score = eval_results["total_yes"]
     max_score = eval_results["max_score"]
+
+    if args.guard and not run_guard(args.guard):
+        print("ERROR: --guard command fails on the unmodified target. "
+              "Fix the guard before starting the loop.", file=sys.stderr)
+        sys.exit(2)
 
     entry = {
         "experiment": f"{experiment_num:03d}",
@@ -593,13 +625,25 @@ def main():
                 revert_target(args.target, backup_path)
                 save_snapshot(args.target, str(snapshots_dir), experiment_num, "crash")
             elif score > best_score:
-                status = "keep"
-                best_score = score
-                save_snapshot(args.target, str(snapshots_dir), experiment_num, "keep")
+                if run_guard(args.guard):
+                    status = "keep"
+                    best_score = score
+                    save_snapshot(args.target, str(snapshots_dir), experiment_num, "keep")
+                else:
+                    status = "discard"
+                    description = f"{description} (guard failed)"
+                    revert_target(args.target, backup_path)
+                    save_snapshot(args.target, str(snapshots_dir), experiment_num, "discard")
             elif score == best_score and len(new_content) < len(current_content):
                 # Tie on score but simpler: per SKILL.md "Equal results + less code = KEEP"
-                status = "keep"
-                save_snapshot(args.target, str(snapshots_dir), experiment_num, "keep")
+                if run_guard(args.guard):
+                    status = "keep"
+                    save_snapshot(args.target, str(snapshots_dir), experiment_num, "keep")
+                else:
+                    status = "discard"
+                    description = f"{description} (guard failed)"
+                    revert_target(args.target, backup_path)
+                    save_snapshot(args.target, str(snapshots_dir), experiment_num, "discard")
             else:
                 status = "discard"
                 revert_target(args.target, backup_path)
