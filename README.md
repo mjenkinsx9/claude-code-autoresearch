@@ -47,6 +47,10 @@ cp -r claude-code-autoresearch ~/.claude/skills/autoresearch
 # Hermes local install
 mkdir -p ~/.hermes/skills/autoresearch
 cp -r claude-code-autoresearch/* ~/.hermes/skills/autoresearch/
+
+# Hermes + The-Library option: copy the repo contents into
+# ~/.claude/skills/library/skills/autoresearch and keep
+# ~/.claude/skills/library/skills in skills.external_dirs.
 ```
 
 **2. Run**
