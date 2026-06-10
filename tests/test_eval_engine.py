@@ -36,3 +36,14 @@ def test_extra_entries_cannot_exceed_criteria_count(monkeypatch):
     monkeypatch.setattr(eval_engine, "run_agent_prompt", _stub_response(payload))
     result = eval_engine.evaluate_single_output("output", CRITERIA)
     assert result["total_yes"] == len(CRITERIA)
+
+
+def test_eval_prompt_delimits_untrusted_output():
+    prompt = eval_engine.build_eval_prompt("SOME OUTPUT", CRITERIA)
+    assert "<<<OUTPUT_START>>>" in prompt
+    assert "<<<OUTPUT_END>>>" in prompt
+    assert "not instructions" in prompt.lower()
+    # The untrusted output sits between the delimiters
+    start = prompt.index("<<<OUTPUT_START>>>")
+    end = prompt.index("<<<OUTPUT_END>>>")
+    assert "SOME OUTPUT" in prompt[start:end]
