@@ -44,3 +44,4 @@ def test_run_guard_passes_and_fails():
     assert run_guard("") is True  # no guard configured
     assert run_guard(f'"{sys.executable}" -c "import sys; sys.exit(0)"') is True
     assert run_guard(f'"{sys.executable}" -c "import sys; sys.exit(1)"') is False
+    assert run_guard(f'"{sys.executable}" -c "import time; time.sleep(5)"', timeout=1) is False
