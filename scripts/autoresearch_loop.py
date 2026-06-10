@@ -108,6 +108,13 @@ def run_guard(guard_cmd: str, timeout: int = 600) -> bool:
     return result.returncode == 0
 
 
+def resolve_runs_per_experiment(cli_value, eval_config: dict) -> int:
+    """CLI flag > eval config 'runs_per_experiment' > default 5."""
+    if cli_value is not None:
+        return cli_value
+    return int(eval_config.get("runs_per_experiment", 5))
+
+
 def save_snapshot(target_path: str, snapshot_dir: str, experiment_num: int, status: str):
     """Save a snapshot of the target file after experiment."""
     snapshot_path = os.path.join(snapshot_dir, f"experiment_{experiment_num:03d}_{status}.md")
@@ -361,8 +368,9 @@ def main():
     parser.add_argument("--target", required=True, help="Path to target file to optimize")
     parser.add_argument("--program", required=True, help="Path to program.md instructions")
     parser.add_argument("--eval-config", required=True, help="Path to eval config JSON")
-    parser.add_argument("--runs-per-experiment", type=int, default=5,
-                        help="Number of test runs per experiment (default: 5)")
+    parser.add_argument("--runs-per-experiment", type=int, default=None,
+                        help="Number of test runs per experiment "
+                             "(default: eval config 'runs_per_experiment', else 5)")
     parser.add_argument("--output-dir", default="./autoresearch-results/",
                         help="Directory for results and snapshots")
     parser.add_argument("--experiment-model", default="opus",
@@ -418,6 +426,9 @@ def main():
 
     # Load configuration
     eval_config = load_config(args.eval_config)
+    args.runs_per_experiment = resolve_runs_per_experiment(
+        args.runs_per_experiment, eval_config
+    )
     program = load_program(args.program)
     test_prompts = eval_config.get("test_prompts", ["Default test"])
 
