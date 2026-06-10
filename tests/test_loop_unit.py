@@ -26,6 +26,12 @@ def test_force_utf8_output_reconfigures_streams():
     import sys
     from autoresearch_loop import _force_utf8_output
 
-    _force_utf8_output()
-    enc = (sys.stdout.encoding or "").lower().replace("-", "")
-    assert enc == "utf8"
+    saved_stdout, saved_stderr = sys.stdout, sys.stderr
+    try:
+        _force_utf8_output()
+        enc = (sys.stdout.encoding or "").lower().replace("-", "")
+        assert enc == "utf8"
+        assert sys.stdout.errors == "replace"
+    finally:
+        sys.stdout = saved_stdout
+        sys.stderr = saved_stderr
