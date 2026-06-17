@@ -10,6 +10,7 @@
 [![Hermes](https://img.shields.io/badge/Hermes-compatible-8A2BE2?style=flat)](https://nousresearch.com/)
 [![Based on Karpathy's Autoresearch](https://img.shields.io/badge/Based%20on-Karpathy's%20Autoresearch-orange?style=flat&logo=github&logoColor=white)](https://github.com/karpathy/autoresearch)
 [![MIT License](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
+[![Release](https://img.shields.io/badge/release-2.0-brightgreen?style=flat)](CHANGELOG.md)
 
 <p align="center">
   <img src="assets/the-loop.svg" alt="The autoresearch loop: review, modify, verify, decide, log — repeating" width="860">
@@ -201,6 +202,10 @@ python scripts/generate_dashboard.py --results autoresearch-results/results.tsv 
 ```text
 claude-code-autoresearch/
 ├── SKILL.md                          ← the skill: protocol, modes, backends
+├── README.md                         ← this file
+├── CHANGELOG.md                      ← version history
+├── tests.md                          ← manual verification scenarios
+├── requirements-dev.txt              ← pytest (dev only)
 ├── assets/                           ← animated diagrams used in this README
 ├── examples/                         ← ready-made eval configs (skill / prompt / code)
 ├── references/
@@ -264,6 +269,7 @@ python -m pytest tests/
 | [references/security-workflow.md](references/security-workflow.md) | Security-audit mode |
 | [references/results-logging.md](references/results-logging.md) | Log schemas + management |
 | [tests.md](tests.md) | Manual verification scenarios |
+| [CHANGELOG.md](CHANGELOG.md) | What changed between releases |
 
 ---
 

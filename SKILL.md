@@ -2,7 +2,7 @@
 name: autoresearch
 description: >-
   Use when a user wants an autonomous, measurable modify -> verify -> keep/discard loop for improving a skill, prompt, document, or code file. Runs with Claude Code, Hermes, or a custom agent command. Use for /autoresearch, /autoresearch-plan, /autoresearch-security, "iterate until the score improves", "run overnight", or similar measurable optimization requests.
-version: 1.2.0
+version: 2.0.0
 author: Mike Jenkins
 license: MIT
 argument-hint: "[plan|security|run] [goal or target]"
