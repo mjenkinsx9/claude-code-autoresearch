@@ -224,9 +224,19 @@ Question prompt:
       description: "Just show me the command, I'll run it myself later"
 ```
 
-If "Launch now -- unlimited": invoke `/autoresearch` with the configuration.
-If "Launch now -- bounded": ask for iteration count, then run the Python runner with `--max-experiments N` or invoke `/loop N /autoresearch` when the current agent supports that slash-command pattern.
+If "Launch now -- unlimited": invoke `/autoresearch` with the configuration and keep the active harness in control of edits.
+If "Launch now -- bounded": ask for iteration count, store it as `max_iterations`, then invoke `/autoresearch` with the configuration and stop after that many `score` runs.
 If "Copy config only": output the ready-to-paste command block and stop.
+
+Before launch, initialize the deterministic state manager:
+
+```bash
+python scripts/autoresearch_loop.py baseline \
+  --target {target_file} \
+  --verify-command '{verify_command}' \
+  --direction {higher_or_lower} \
+  --guard-command '{guard_command_if_any}'
+```
 
 ## Metric Suggestion Database
 

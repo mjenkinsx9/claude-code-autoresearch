@@ -19,7 +19,8 @@ Works with both unbounded and bounded modes:
 /autoresearch-security
 
 # Bounded -- run exactly N security sweep iterations
-/loop 10 /autoresearch-security
+/autoresearch-security
+Max iterations: 10
 
 # With target scope
 /autoresearch-security
@@ -56,7 +57,7 @@ AUTONOMOUS LOOP:
 
 ## Persona Composition
 
-If a security-persona skill (e.g. `persona-security-expert`) is installed in the current agent, adopt its mindset and checklists. Otherwise use the STRIDE table in Step 4 and the OWASP Top 10 sweep below — this file is self-contained and does not require any other skill.
+Adopt the `persona-security-expert` skill's mindset for all analysis in this audit. Reference that skill for the full OWASP Top 10 checklist and STRIDE threat modeling methodology. Do not duplicate those checklists — compose with the existing persona.
 
 ## Setup Phase — Threat Model Generation
 
@@ -243,7 +244,7 @@ iteration	vector	severity	owasp	stride	confidence	location	description
 #### Phase 6: Repeat
 
 - **Unbounded:** Keep finding vulnerabilities. Never stop. Never ask.
-- **Bounded:** After N iterations (`--max-experiments N` in the Python runner, or `/loop N` where supported), generate final report and stop.
+- **Bounded:** After N active-harness iterations, generate final report and stop.
 - **Coverage tracking:** Every 5 iterations, print coverage summary.
 
 ### Coverage Summary Format
@@ -364,10 +365,12 @@ Flags can be combined:
 
 ```
 # Delta audit + auto-fix critical/high + block on remaining criticals
-/loop 15 /autoresearch-security --diff --fix --fail-on critical
+/autoresearch-security --diff --fix --fail-on critical
+Max iterations: 15
 
 # Quick delta check in CI
-/loop 5 /autoresearch-security --diff --fail-on high
+/autoresearch-security --diff --fail-on high
+Max iterations: 5
 ```
 
 **Execution order when combined:**

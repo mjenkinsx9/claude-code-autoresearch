@@ -1,8 +1,8 @@
-# Autoresearch skill verification
+# Autoresearch Agent verification
 
-Last verified: 2026-05-18
+Last verified: pending current PR
 
-## Scenario 1 — CLI help exposes agent backend controls
+## Scenario 1 — CLI help exposes no-headless commands
 
 Input:
 
@@ -13,37 +13,54 @@ python3 scripts/eval_engine.py --help
 
 Expected result:
 
-- Both commands exit 0.
-- Both help pages include `--agent-backend`.
-- Both help pages include `--agent-command`.
+- `autoresearch_loop.py` help includes `baseline`, `score`, and `run-verify`.
+- `eval_engine.py` help includes `--emit-prompt`, `--judgments-file`, and no agent backend flags.
 
-Verified on 2026-05-18.
-
-## Scenario 2 — Custom backend smoke test completes a bounded run
+## Scenario 2 — Mechanical baseline and score keep/discard
 
 Input:
 
 ```bash
-python3 scripts/autoresearch_loop.py \
-  --target target.md \
-  --program program.md \
-  --eval-config eval.json \
-  --runs-per-experiment 1 \
-  --max-experiments 2 \
-  --agent-backend custom \
-  --agent-command 'python3 agent_stub.py {prompt_file}'
+python3 scripts/autoresearch_loop.py baseline \
+  --target target.txt \
+  --verify-command 'python3 score.py target.txt' \
+  --direction higher
+
+python3 scripts/autoresearch_loop.py score \
+  --target target.txt \
+  --description 'candidate change'
 ```
 
 Expected result:
 
-- The baseline runs.
-- One generated experiment runs.
-- `results.tsv` is written.
-- The process exits 0.
+- Baseline writes `autoresearch-results/state.json`.
+- Score writes `results.tsv`.
+- Improved score is kept.
+- Worse score is reverted to the best snapshot.
 
-Verified on 2026-05-18.
+## Scenario 3 — Guard failure reverts
 
-## Scenario 3 — Eval engine can judge through a custom backend
+Input:
+
+```bash
+python3 scripts/autoresearch_loop.py baseline \
+  --target target.txt \
+  --verify-command 'python3 score.py target.txt' \
+  --direction higher \
+  --guard-command './guard.sh'
+
+python3 scripts/autoresearch_loop.py score \
+  --target target.txt \
+  --description 'guard failing change'
+```
+
+Expected result:
+
+- If verify improves but guard exits non-zero, status is `crash`.
+- Target reverts to the best snapshot.
+- Guard output is saved under `autoresearch-results/runs/`.
+
+## Scenario 4 — Binary eval emits prompt and scores supplied judgments
 
 Input:
 
@@ -51,56 +68,28 @@ Input:
 python3 scripts/eval_engine.py \
   --eval-config eval.json \
   --output 'sample output' \
-  --agent-backend custom \
-  --agent-command 'python3 agent_stub.py {prompt_file}'
+  --emit-prompt
+
+python3 scripts/eval_engine.py \
+  --eval-config eval.json \
+  --output 'sample output' \
+  --judgments '{"outputs":[{"output_id":"sample","scores":[{"criterion":1,"question":"Does it work?","passed":true,"evidence":"yes"}]}]}'
 ```
 
 Expected result:
 
-- Command exits 0.
-- Output contains `Score:`.
-- No Claude CLI dependency is required.
+- The first command prints a judge prompt for the active harness.
+- The second command prints `Score:` without calling any model CLI.
 
-Verified on 2026-05-18.
-
-## Scenario 4 — Hermes discovery from The-Library
+## Scenario 5 — Legacy headless adapter is disabled
 
 Input:
 
 ```bash
-hermes skills list
-```
-
-and direct skill load through the Hermes skill tool.
-
-Expected result:
-
-- `autoresearch` appears as an enabled local skill.
-- `skill_view autoresearch` loads the copy from The-Library.
-
-Verified on 2026-05-18.
-
-## Scenario 5 — Hermes backend adapter smoke test
-
-Input:
-
-```bash
-python3 - <<'PY'
-from scripts.agent_cli import run_agent_prompt
-result = run_agent_prompt(
-    'Respond with exactly this text and nothing else: HERMES_BACKEND_OK',
-    backend='hermes',
-    timeout=180,
-)
-assert result.ok
-assert 'HERMES_BACKEND_OK' in result.stdout
-PY
+python3 scripts/agent_cli.py
 ```
 
 Expected result:
 
-- Command exits 0.
-- Backend is `hermes`.
-- Stdout contains `HERMES_BACKEND_OK`.
-
-Verified on 2026-05-18.
+- Command exits non-zero.
+- Output explains that headless agent invocation has been removed.

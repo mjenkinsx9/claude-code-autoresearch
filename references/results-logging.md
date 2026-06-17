@@ -4,78 +4,55 @@ Track every iteration in a structured log. Enables pattern recognition and preve
 
 ## Log Format (TSV)
 
-There are two TSV schemas depending on how you run autoresearch. Pick the one
-that matches your mode — the dashboard (`scripts/generate_dashboard.py`) only
-parses the script schema.
-
-### Script schema (written by `scripts/autoresearch_loop.py`)
-
-`autoresearch-results/results.tsv`:
+`scripts/autoresearch_loop.py` writes `autoresearch-results/results.tsv` automatically.
 
 ```tsv
-experiment	score	max_score	status	description	timestamp
-001	28	48	keep	baseline — original target file	2026-06-10T08:00:00
-002	35	48	keep	added explicit CTA instruction	2026-06-10T08:14:02
-003	33	48	discard	word limit broke tone	2026-06-10T08:31:40
+experiment	score	max_score	best_score	status	description	timestamp	direction	verify_command	guard_command	snapshot
 ```
+
+### Columns
 
 | Column | Type | Description |
-|--------|------|-------------|
-| experiment | string | Zero-padded sequential number (001, 002, ...) |
-| score | int | Total yes answers across all runs and criteria |
-| max_score | int | criteria × test prompts × runs per experiment |
-| status | enum | `keep`, `discard`, `crash` |
+|---|---|---|
+| experiment | string | Sequential experiment id, starting at `001` for baseline |
+| score | number | Parsed metric for this candidate, blank if verify failed before parsing |
+| max_score | number | Optional maximum score for binary eval compatibility; blank for mechanical metrics |
+| best_score | number | Best known score after this row is processed |
+| status | enum | `keep`, `discard`, or `crash` |
 | description | string | One-sentence description of what was tried |
-| timestamp | string | ISO 8601 |
+| timestamp | ISO datetime | When the row was written |
+| direction | enum | `higher` or `lower` |
+| verify_command | string | Actual verify command used |
+| guard_command | string | Actual guard command used, if any |
+| snapshot | path | Snapshot of the baseline/candidate file |
 
-### Manual-loop schema (agent-driven loops without the Python runner)
-
-`autoresearch-results.tsv` in the working directory:
+### Example
 
 ```tsv
-iteration	commit	metric	delta	guard	status	description
+experiment	score	max_score	best_score	status	description	timestamp	direction	verify_command	guard_command	snapshot
+001	85.2		85.2	keep	baseline	2026-06-17T10:00:00	higher	./score.sh	npm test	autoresearch-results/snapshots/experiment_001_keep.md
+002	87.1		87.1	keep	add auth edge cases	2026-06-17T10:05:00	higher	./score.sh	npm test	autoresearch-results/snapshots/experiment_002_keep.md
+003	86.5		87.1	discard	refactor helpers	2026-06-17T10:10:00	higher	./score.sh	npm test	autoresearch-results/snapshots/experiment_003_discard.md
+004			87.1	crash	guard failed: tests broke	2026-06-17T10:15:00	higher	./score.sh	npm test	autoresearch-results/snapshots/experiment_004_crash.md
 ```
 
-| Column | Type | Description |
-|--------|------|-------------|
-| iteration | int | Sequential counter starting at 0 (baseline) |
-| commit | string | Short git hash (7 chars), "-" if reverted |
-| metric | float | Measured value from verification |
-| delta | float | Change from previous best (negative = improved for "lower is better") |
-| guard | enum | `pass`, `fail`, or `-` (no guard configured) |
-| status | enum | `baseline`, `keep`, `discard`, `crash` |
-| description | string | One-sentence description of what was tried |
-
-### Example (manual-loop schema)
-
-```tsv
-iteration	commit	metric	delta	guard	status	description
-0	a1b2c3d	85.2	0.0	pass	baseline	initial state -- test coverage 85.2%
-1	b2c3d4e	87.1	+1.9	pass	keep	add tests for auth middleware edge cases
-2	-	86.5	-0.6	-	discard	refactor test helpers (broke 2 tests)
-3	-	0.0	0.0	-	crash	add integration tests (DB connection failed)
-4	-	88.9	+1.8	fail	discard	inline hot-path functions (guard: 3 tests broke)
-5	c3d4e5f	88.3	+1.2	pass	keep	add tests for error handling in API routes
-6	d4e5f6g	89.0	+0.7	pass	keep	add boundary value tests for validators
-```
-
-**Note:** When guard fails, the metric may have improved but the change is still discarded. The guard column makes this visible in the log so the agent can learn which optimization approaches tend to cause regressions.
+When guard fails, the metric may have improved but the change is still reverted and logged as `crash`; the saved guard output under `autoresearch-results/runs/` explains why.
 
 ## Log Management
 
-- Create at setup (iteration 0 = baseline)
-- Append after EVERY iteration (including crashes)
-- Do NOT commit this file to git (add to .gitignore)
-- Read last 10-20 entries at start of each iteration for context
-- Use to detect patterns: what kind of changes tend to succeed?
+- Let `scripts/autoresearch_loop.py baseline` create the first row.
+- Let `scripts/autoresearch_loop.py score` append after every candidate.
+- Do not commit `autoresearch-results/` to git.
+- Read the last 10-20 rows at the start of each iteration.
+- Preserve the log; it is the research map for future agents.
 
 ## Summary Reporting
 
-Every 10 iterations (or at loop completion in bounded mode), print a brief summary:
+Every 10 iterations, or at bounded-loop completion, summarize:
 
-```
-=== Autoresearch Progress (iteration 20) ===
-Baseline: 85.2% -> Current best: 92.1% (+6.9%)
+```text
+=== Autoresearch Progress ===
+Baseline: 85.2 -> Current best: 92.1 (+6.9)
 Keeps: 8 | Discards: 10 | Crashes: 2
 Last 5: keep, discard, discard, keep, keep
 ```
@@ -83,10 +60,8 @@ Last 5: keep, discard, discard, keep, keep
 ## Metric Direction
 
 Clarify at setup whether lower or higher is better:
-- **Lower is better:** val_bpb, response time (ms), bundle size (KB), error count
-- **Higher is better:** test coverage (%), lighthouse score, throughput (req/s)
 
-Record direction in first line of results log as a comment:
-```
-# metric_direction: higher_is_better
-```
+- **Lower is better:** response time, bundle size, error count, LOC
+- **Higher is better:** coverage, Lighthouse score, throughput, pass count
+
+The helper stores direction in `state.json` and records it on each TSV row.

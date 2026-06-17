@@ -9,9 +9,9 @@ To set up a new autoresearch experiment:
 1. **Agree on a run tag**: Use today's date (e.g. `mar21`). This identifies the experiment run.
 2. **Read the target file**: Read the file being optimized for full context.
 3. **Read the eval config**: Understand what "better" means for this experiment.
-4. **Initialize results.tsv**: Create the results file with just the header row.
-5. **Establish baseline**: Run the target as-is to get the baseline score.
-6. **Confirm and go**: Confirm setup looks good, then kick off experimentation.
+4. **Establish baseline**: Run `scripts/autoresearch_loop.py baseline` with the target, verify command, direction, and optional guard.
+5. **Confirm state**: Verify `autoresearch-results/state.json` and `results.tsv` were created.
+6. **Confirm and go**: Confirm setup looks good, then kick off experimentation in the active harness.
 
 ## Target
 
@@ -77,11 +77,11 @@ LOOP FOREVER:
 1. Review the results log and current target file
 2. Plan an experiment — one focused change at a time
 3. Edit the target file
-4. Run the experiment (execute target × runs_per_experiment for each test prompt)
-5. Score all outputs against the eval criteria
-6. Record results in results.tsv
-7. If score improved → KEEP the change (this is now the new baseline)
-8. If score is equal or worse → REVERT to previous version
+4. Run the experiment (execute target × runs_per_experiment for each test prompt, or run the mechanical verify command)
+5. Score all outputs against the eval criteria or parse the mechanical metric
+6. Run `scripts/autoresearch_loop.py score --target <target> --description '<one change>'`
+7. If status is KEEP → continue from the new best state
+8. If status is DISCARD or CRASH → the helper reverted to the previous best snapshot
 9. Go to step 1
 
 **Timeout**: If a single test run takes more than 2 minutes, kill it and treat as a failure.
@@ -92,18 +92,22 @@ LOOP FOREVER:
 
 ## Output Format
 
-After each experiment, log to results.tsv:
+After each experiment, `scripts/autoresearch_loop.py` logs to `autoresearch-results/results.tsv`:
 
-```
-experiment	score	max_score	status	description	timestamp
+```tsv
+experiment	score	max_score	best_score	status	description	timestamp	direction	verify_command	guard_command	snapshot
 ```
 
 - experiment: sequential number (001, 002, etc.)
-- score: total yes answers across all runs and criteria
-- max_score: theoretical maximum (criteria × runs × prompts)
+- score: parsed mechanical score, or binary yes-answer total when using a supplied eval score
+- max_score: optional theoretical maximum for binary evals; blank for mechanical metrics
+- best_score: best known score after the row
 - status: keep, discard, or crash
 - description: short text describing what this experiment tried
 - timestamp: ISO 8601 timestamp
+- direction: higher or lower
+- verify_command / guard_command: actual commands used
+- snapshot: saved candidate/baseline file path
 
 ## Notes
 
