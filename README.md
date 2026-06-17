@@ -1,5 +1,8 @@
 # autoresearch-agent
 
+[![Release](https://img.shields.io/badge/release-2.0.0-brightgreen?style=flat)](CHANGELOG.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat)](LICENSE)
+
 **A no-headless, harness-agnostic autoresearch loop for Claude Code, Codex, Gemini CLI, Pi, Hermes, and other agent runtimes.**
 
 Based on [Karpathy's autoresearch](https://github.com/karpathy/autoresearch): constraint + metric + autonomous iteration = compounding gains.
@@ -196,6 +199,7 @@ python scripts/generate_dashboard.py \
 autoresearch-agent/
 ├── README.md
 ├── AGENTS.md
+├── CHANGELOG.md
 ├── SKILL.md
 ├── examples/
 │   ├── code-optimization.json
