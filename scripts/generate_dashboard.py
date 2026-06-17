@@ -1,331 +1,182 @@
 #!/usr/bin/env python3
-"""
-Autoresearch Results Dashboard Generator
+"""Generate a small HTML dashboard from autoresearch results.tsv."""
 
-Reads results.tsv and generates an interactive HTML dashboard showing
-experiment history, scores, and trends.
-
-Usage:
-    python generate_dashboard.py --results path/to/results.tsv --output dashboard.html
-"""
+from __future__ import annotations
 
 import argparse
 import csv
-import html as html_lib
+import html
 import json
-import os
 import sys
 from pathlib import Path
-from datetime import datetime
+from typing import Any
 
 
-def _safe_json_for_script(obj) -> str:
-    """Serialize for inline <script> without allowing tag-breakout or HTML-comment tricks."""
-    return (
-        json.dumps(obj)
-        .replace("</", "<\\/")
-        .replace("<!--", "<\\!--")
-        .replace("\u2028", "\\u2028")
-        .replace("\u2029", "\\u2029")
-    )
+def parse_number(value: str | None) -> float | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
 
 
-def load_results(results_path: str) -> list[dict]:
-    """Load results from TSV file."""
-    results = []
-    with open(results_path, encoding="utf-8") as f:
-        reader = csv.DictReader(f, delimiter="\t")
+def load_results(results_path: str) -> list[dict[str, Any]]:
+    path = Path(results_path)
+    if not path.exists():
+        raise SystemExit(f"Error: results file not found: {results_path}")
+
+    rows: list[dict[str, Any]] = []
+    with path.open(newline="") as fh:
+        reader = csv.DictReader(fh, delimiter="\t")
         for row in reader:
-            try:
-                row["score"] = int(row["score"])
-                row["max_score"] = int(row["max_score"])
-            except (ValueError, KeyError, TypeError) as e:
-                print(f"Warning: Skipping malformed row: {row} ({e})", file=sys.stderr)
-                continue
-            row["score_pct"] = round(row["score"] / row["max_score"] * 100, 1) if row["max_score"] > 0 else 0
-            results.append(row)
-    return results
+            row = dict(row)
+            row["score_num"] = parse_number(row.get("score"))
+            row["best_score_num"] = parse_number(row.get("best_score"))
+            row["max_score_num"] = parse_number(row.get("max_score"))
+            if row["score_num"] is not None and row["max_score_num"]:
+                row["score_pct"] = round(row["score_num"] / row["max_score_num"] * 100, 1)
+            else:
+                row["score_pct"] = None
+            rows.append(row)
+    return rows
 
 
-def generate_html(results: list[dict], title: str = "Autoresearch Results") -> str:
-    """Generate the dashboard HTML."""
+def safe_json(value: Any) -> str:
+    return json.dumps(value).replace("<", "\\u003c")
+
+
+def generate_html(results: list[dict[str, Any]], title: str) -> str:
     if not results:
-        return "<html><body><h1>No results yet</h1></body></html>"
+        return "<html><body><h1>No results</h1></body></html>"
 
-    max_score = results[0]["max_score"]
-    non_crash_results = [r for r in results if r["status"] != "crash"]
-    best_score = max(r["score"] for r in non_crash_results) if non_crash_results else 0
-    best_pct = round(best_score / max_score * 100, 1) if max_score > 0 else 0
-    total_experiments = len(results)
-    keeps = sum(1 for r in results if r["status"] == "keep")
-    discards = sum(1 for r in results if r["status"] == "discard")
-    crashes = sum(1 for r in results if r["status"] == "crash")
+    kept = sum(1 for r in results if r.get("status") == "keep")
+    discarded = sum(1 for r in results if r.get("status") == "discard")
+    crashed = sum(1 for r in results if r.get("status") == "crash")
+    latest = results[-1]
+    direction = latest.get("direction") or "higher"
+    numeric_scores = [r["score_num"] for r in results if r.get("score_num") is not None and r.get("status") != "crash"]
+    if numeric_scores:
+        best_score = max(numeric_scores) if direction == "higher" else min(numeric_scores)
+    else:
+        best_score = None
 
-    # Running best score for chart
-    running_best = []
-    current_best = 0
-    for r in results:
-        if r["status"] == "keep":
-            current_best = r["score"]
-        running_best.append(current_best)
+    rows = []
+    for row in results:
+        status = html.escape(row.get("status", ""))
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(row.get('experiment', ''))}</td>"
+            f"<td><span class='status {status}'>{status}</span></td>"
+            f"<td>{html.escape(row.get('score', ''))}</td>"
+            f"<td>{html.escape(row.get('best_score', ''))}</td>"
+            f"<td>{html.escape(row.get('description', ''))}</td>"
+            f"<td>{html.escape(row.get('timestamp', ''))}</td>"
+            "</tr>"
+        )
 
-    results_json = _safe_json_for_script(results)
-    running_best_json = _safe_json_for_script(running_best)
-    safe_title = html_lib.escape(title)
+    chart_data = [
+        {"experiment": r.get("experiment"), "score": r.get("score_num"), "status": r.get("status")}
+        for r in results
+    ]
 
-    html = f"""<!DOCTYPE html>
+    best_text = "n/a" if best_score is None else (str(int(best_score)) if float(best_score).is_integer() else f"{best_score:.6g}")
+    title_escaped = html.escape(title)
+
+    return f"""<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{safe_title}</title>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f23; color: #e0e0e0; min-height: 100vh; }}
-        .container {{ max-width: 1200px; margin: 0 auto; padding: 24px; }}
-        h1 {{ font-size: 28px; margin-bottom: 8px; color: #fff; }}
-        .subtitle {{ color: #888; margin-bottom: 24px; font-size: 14px; }}
-
-        .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 32px; }}
-        .stat-card {{ background: #1a1a3e; border-radius: 12px; padding: 20px; border: 1px solid #2a2a5e; }}
-        .stat-label {{ font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }}
-        .stat-value {{ font-size: 32px; font-weight: 700; }}
-        .stat-value.green {{ color: #4ade80; }}
-        .stat-value.blue {{ color: #60a5fa; }}
-        .stat-value.red {{ color: #f87171; }}
-        .stat-value.yellow {{ color: #facc15; }}
-
-        .chart-container {{ background: #1a1a3e; border-radius: 12px; padding: 24px; border: 1px solid #2a2a5e; margin-bottom: 32px; }}
-        .chart-title {{ font-size: 16px; font-weight: 600; margin-bottom: 16px; }}
-        canvas {{ width: 100% !important; height: 300px !important; }}
-
-        .table-container {{ background: #1a1a3e; border-radius: 12px; padding: 24px; border: 1px solid #2a2a5e; overflow-x: auto; }}
-        .table-title {{ font-size: 16px; font-weight: 600; margin-bottom: 16px; }}
-        table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
-        th {{ text-align: left; padding: 12px 16px; border-bottom: 2px solid #2a2a5e; color: #888; font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: 1px; }}
-        td {{ padding: 10px 16px; border-bottom: 1px solid #1f1f4f; }}
-        tr:hover {{ background: #22224a; }}
-
-        .badge {{ display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }}
-        .badge-keep {{ background: #064e3b; color: #4ade80; }}
-        .badge-discard {{ background: #4a1d1d; color: #f87171; }}
-        .badge-crash {{ background: #4a3b1d; color: #facc15; }}
-
-        .score-bar {{ display: flex; align-items: center; gap: 8px; }}
-        .score-bar-track {{ flex: 1; height: 8px; background: #2a2a5e; border-radius: 4px; overflow: hidden; }}
-        .score-bar-fill {{ height: 100%; border-radius: 4px; transition: width 0.3s; }}
-        .score-bar-fill.high {{ background: #4ade80; }}
-        .score-bar-fill.mid {{ background: #facc15; }}
-        .score-bar-fill.low {{ background: #f87171; }}
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title_escaped}</title>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 2rem; background: #101120; color: #f4f4f5; }}
+.card {{ background: #181a2f; border: 1px solid #2c2f4a; border-radius: 12px; padding: 1rem; margin: 1rem 0; }}
+.stats {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1rem; }}
+.stat {{ font-size: 2rem; font-weight: 700; }}
+table {{ width: 100%; border-collapse: collapse; }}
+th, td {{ padding: .65rem; border-bottom: 1px solid #2c2f4a; text-align: left; vertical-align: top; }}
+th {{ color: #a5b4fc; }}
+.status {{ border-radius: 999px; padding: .15rem .5rem; font-size: .8rem; }}
+.status.keep {{ background: #064e3b; color: #a7f3d0; }}
+.status.discard {{ background: #4c1d1d; color: #fecaca; }}
+.status.crash {{ background: #451a03; color: #fed7aa; }}
+canvas {{ width: 100%; max-height: 320px; background: #0b0c18; border-radius: 8px; }}
+</style>
 </head>
 <body>
-    <div class="container">
-        <h1>📊 {safe_title}</h1>
-        <div class="subtitle">Generated {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} · {total_experiments} experiments</div>
-
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label">Best Score</div>
-                <div class="stat-value green">{best_score}/{max_score}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Best %</div>
-                <div class="stat-value blue">{best_pct}%</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Experiments</div>
-                <div class="stat-value">{total_experiments}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Kept / Discarded / Crashed</div>
-                <div class="stat-value"><span class="green">{keeps}</span> / <span class="red">{discards}</span> / <span class="yellow">{crashes}</span></div>
-            </div>
-        </div>
-
-        <div class="chart-container">
-            <div class="chart-title">Score Progression</div>
-            <canvas id="scoreChart"></canvas>
-        </div>
-
-        <div class="table-container">
-            <div class="table-title">Experiment Log</div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>#</th>
-                        <th>Score</th>
-                        <th>Progress</th>
-                        <th>Status</th>
-                        <th>Description</th>
-                        <th>Time</th>
-                    </tr>
-                </thead>
-                <tbody id="resultsBody"></tbody>
-            </table>
-        </div>
-    </div>
-
-    <script>
-        const results = {results_json};
-        const runningBest = {running_best_json};
-        const maxScore = {max_score};
-
-        // Populate table
-        const escapeHtml = (s) => String(s == null ? '' : s)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;')
-            .replace(/`/g, '&#96;');
-        const tbody = document.getElementById('resultsBody');
-        const rowsHtml = results.map((r) => {{
-            const pct = r.max_score > 0 ? (r.score / r.max_score * 100).toFixed(1) : 0;
-            const barClass = pct >= 80 ? 'high' : pct >= 50 ? 'mid' : 'low';
-            const badgeClass = r.status === 'keep' ? 'badge-keep' : r.status === 'crash' ? 'badge-crash' : 'badge-discard';
-            const ts = r.timestamp ? new Date(r.timestamp).toLocaleTimeString() : '';
-            return `
-                <tr>
-                    <td>${{escapeHtml(r.experiment)}}</td>
-                    <td>${{escapeHtml(r.score)}}/${{escapeHtml(r.max_score)}}</td>
-                    <td>
-                        <div class="score-bar">
-                            <div class="score-bar-track">
-                                <div class="score-bar-fill ${{barClass}}" style="width:${{pct}}%"></div>
-                            </div>
-                            <span>${{pct}}%</span>
-                        </div>
-                    </td>
-                    <td><span class="badge ${{badgeClass}}">${{escapeHtml(r.status)}}</span></td>
-                    <td>${{escapeHtml(r.description)}}</td>
-                    <td>${{escapeHtml(ts)}}</td>
-                </tr>
-            `;
-        }}).join('');
-        tbody.innerHTML = rowsHtml;
-
-        // Simple chart using canvas
-        const canvas = document.getElementById('scoreChart');
-        const ctx = canvas.getContext('2d');
-        const dpr = window.devicePixelRatio || 1;
-        canvas.width = canvas.offsetWidth * dpr;
-        canvas.height = 300 * dpr;
-        ctx.scale(dpr, dpr);
-
-        const w = canvas.offsetWidth;
-        const h = 300;
-        const pad = {{ top: 20, right: 20, bottom: 40, left: 50 }};
-        const plotW = w - pad.left - pad.right;
-        const plotH = h - pad.top - pad.bottom;
-
-        // Draw axes
-        ctx.strokeStyle = '#2a2a5e';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(pad.left, pad.top);
-        ctx.lineTo(pad.left, h - pad.bottom);
-        ctx.lineTo(w - pad.right, h - pad.bottom);
-        ctx.stroke();
-
-        // Y-axis labels
-        ctx.fillStyle = '#888';
-        ctx.font = '11px sans-serif';
-        ctx.textAlign = 'right';
-        for (let i = 0; i <= 4; i++) {{
-            const val = Math.round(maxScore * i / 4);
-            const y = h - pad.bottom - (plotH * i / 4);
-            ctx.fillText(val.toString(), pad.left - 8, y + 4);
-            ctx.strokeStyle = '#1f1f4f';
-            ctx.beginPath();
-            ctx.moveTo(pad.left, y);
-            ctx.lineTo(w - pad.right, y);
-            ctx.stroke();
-        }}
-
-        if (results.length > 1) {{
-            const xStep = plotW / (results.length - 1);
-
-            // Score dots and lines
-            ctx.strokeStyle = '#60a5fa';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            results.forEach((r, i) => {{
-                const x = pad.left + i * xStep;
-                const y = h - pad.bottom - (r.score / maxScore * plotH);
-                if (i === 0) ctx.moveTo(x, y);
-                else ctx.lineTo(x, y);
-            }});
-            ctx.stroke();
-
-            // Running best line
-            ctx.strokeStyle = '#4ade80';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([5, 5]);
-            ctx.beginPath();
-            runningBest.forEach((score, i) => {{
-                const x = pad.left + i * xStep;
-                const y = h - pad.bottom - (score / maxScore * plotH);
-                if (i === 0) ctx.moveTo(x, y);
-                else ctx.lineTo(x, y);
-            }});
-            ctx.stroke();
-            ctx.setLineDash([]);
-
-            // Dots colored by status
-            results.forEach((r, i) => {{
-                const x = pad.left + i * xStep;
-                const y = h - pad.bottom - (r.score / maxScore * plotH);
-                ctx.beginPath();
-                ctx.arc(x, y, 4, 0, Math.PI * 2);
-                ctx.fillStyle = r.status === 'keep' ? '#4ade80' : r.status === 'crash' ? '#facc15' : '#f87171';
-                ctx.fill();
-            }});
-
-            // Legend
-            ctx.font = '11px sans-serif';
-            ctx.fillStyle = '#60a5fa';
-            ctx.fillText('● Score', w - 180, pad.top + 10);
-            ctx.fillStyle = '#4ade80';
-            ctx.fillText('--- Best', w - 110, pad.top + 10);
-        }}
-
-        // X-axis label
-        ctx.fillStyle = '#888';
-        ctx.font = '11px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('Experiment', w / 2, h - 8);
-    </script>
+<h1>{title_escaped}</h1>
+<div class="stats">
+  <div class="card"><div>Experiments</div><div class="stat">{len(results)}</div></div>
+  <div class="card"><div>Best score</div><div class="stat">{best_text}</div><div>{html.escape(direction)} is better</div></div>
+  <div class="card"><div>Kept</div><div class="stat">{kept}</div></div>
+  <div class="card"><div>Discarded</div><div class="stat">{discarded}</div></div>
+  <div class="card"><div>Crashed</div><div class="stat">{crashed}</div></div>
+</div>
+<div class="card"><canvas id="chart" width="1000" height="320"></canvas></div>
+<div class="card">
+<table>
+<thead><tr><th>Experiment</th><th>Status</th><th>Score</th><th>Best</th><th>Description</th><th>Timestamp</th></tr></thead>
+<tbody>{''.join(rows)}</tbody>
+</table>
+</div>
+<script>
+const data = {safe_json(chart_data)};
+const canvas = document.getElementById('chart');
+const ctx = canvas.getContext('2d');
+const scores = data.map(d => d.score).filter(v => typeof v === 'number');
+if (scores.length) {{
+  const min = Math.min(...scores);
+  const max = Math.max(...scores);
+  const pad = 40;
+  const w = canvas.width, h = canvas.height;
+  ctx.strokeStyle = '#4f46e5';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  data.forEach((d, i) => {{
+    if (typeof d.score !== 'number') return;
+    const x = pad + (i / Math.max(1, data.length - 1)) * (w - pad * 2);
+    const y = h - pad - ((d.score - min) / Math.max(1e-9, max - min)) * (h - pad * 2);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }});
+  ctx.stroke();
+  data.forEach((d, i) => {{
+    if (typeof d.score !== 'number') return;
+    const x = pad + (i / Math.max(1, data.length - 1)) * (w - pad * 2);
+    const y = h - pad - ((d.score - min) / Math.max(1e-9, max - min)) * (h - pad * 2);
+    ctx.fillStyle = d.status === 'keep' ? '#22c55e' : d.status === 'crash' ? '#f97316' : '#ef4444';
+    ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
+  }});
+  ctx.fillStyle = '#cbd5e1';
+  ctx.fillText('max ' + max, 8, pad);
+  ctx.fillText('min ' + min, 8, h - pad);
+}} else {{
+  ctx.fillStyle = '#cbd5e1';
+  ctx.fillText('No numeric scores yet', 40, 80);
+}}
+</script>
 </body>
-</html>"""
+</html>
+"""
 
-    return html
 
-
-def main():
-    parser = argparse.ArgumentParser(description="Autoresearch Results Dashboard")
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Generate an HTML dashboard from autoresearch results.tsv")
     parser.add_argument("--results", required=True, help="Path to results.tsv")
     parser.add_argument("--output", default="dashboard.html", help="Output HTML file path")
-    parser.add_argument("--title", default="Autoresearch Results", help="Dashboard title")
+    parser.add_argument("--title", default="Autoresearch Agent Results", help="Dashboard title")
     args = parser.parse_args()
 
-    if not os.path.exists(args.results):
-        print(f"Error: results file '{args.results}' not found")
-        sys.exit(1)
-
     results = load_results(args.results)
-    html = generate_html(results, args.title)
-
-    with open(args.output, "w", encoding="utf-8") as f:
-        f.write(html)
-
-    print(f"Dashboard generated: {args.output}")
-    print(f"Experiments: {len(results)}")
+    output = generate_html(results, args.title)
+    Path(args.output).write_text(output)
+    print(f"Dashboard written to {args.output}")
     if results:
-        non_crash = [r["score"] for r in results if r["status"] != "crash"]
-        best = max(non_crash) if non_crash else 0
-        print(f"Best score: {best}/{results[0]['max_score']}")
+        non_crash = [r["score_num"] for r in results if r.get("status") != "crash" and r.get("score_num") is not None]
+        if non_crash:
+            print(f"Best score: {max(non_crash)}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -4,12 +4,12 @@ Detailed protocol for the autoresearch iteration loop. SKILL.md has the summary;
 
 ## Loop Modes
 
-Autoresearch supports two loop modes:
+Autoresearch supports two loop modes, both driven by the active harness session:
 
-- **Unbounded (default):** Loop forever until manually interrupted (`Ctrl+C`)
-- **Bounded:** Loop exactly N experiments with `--max-experiments N` in the Python runner. In Claude Code, `/loop N /autoresearch` can be used when available.
+- **Unbounded (default):** Loop until the user interrupts or a stop rule triggers.
+- **Bounded:** Loop exactly N experiments by tracking `current_iteration` against `max_iterations` in the session notes/results log.
 
-When bounded, track `current_iteration` against `max_iterations`. After the final iteration, print a summary and stop.
+The helper scripts do not run the agent loop for you and never invoke headless model commands. They only verify, guard, snapshot, log, and revert. When bounded, print a final summary after the last iteration and stop.
 
 ## Phase 1: Review (30 seconds)
 
@@ -51,7 +51,7 @@ Pick the NEXT change. Priority order:
 
 ## Phase 4: Snapshot or Commit (Before Verification)
 
-The Python runner writes backups and snapshots automatically. For manual loops, create a checkpoint before verification. A git commit is acceptable on disposable branches, but do not commit experimental changes to shared branches unless that is part of the agreed workflow.
+`scripts/autoresearch_loop.py score` writes snapshots automatically and reverts failed candidates to the best kept snapshot. For manual loops, create a checkpoint before verification. A git commit is acceptable on disposable branches, but do not commit experimental changes to shared branches unless that is part of the agreed workflow.
 
 ```bash
 # Manual-loop option on a disposable branch
@@ -59,7 +59,7 @@ git add <changed-files>
 git commit -m "experiment: <one-sentence description>"
 ```
 
-Rollback must return to the previous kept state. With git, use `git reset --hard HEAD~1`. With the Python runner, use the backup/snapshot files it created.
+Rollback must return to the previous kept state. With git, use `git reset --hard HEAD~1`. With the helper script, failed `score` runs copy the best snapshot back to the target automatically.
 
 ## Phase 5: Verify (Mechanical Only)
 

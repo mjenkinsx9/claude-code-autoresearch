@@ -1,24 +1,31 @@
 ---
 name: autoresearch
+version: 2.0.0
 description: >-
-  Use when a user wants an autonomous, measurable modify -> verify -> keep/discard loop for improving a skill, prompt, document, or code file. Runs with Claude Code, Hermes, or a custom agent command. Use for /autoresearch, /autoresearch-plan, /autoresearch-security, "iterate until the score improves", "run overnight", or similar measurable optimization requests.
-version: 1.2.0
+  Run a no-headless, measurable modify -> verify -> keep/discard loop for improving a skill, prompt, document, or code file. Use for /autoresearch, /autoresearch-plan, /autoresearch-security, "iterate until the score improves", "run overnight", or similar optimization requests. The active harness does the agent work; helper scripts only run deterministic scoring, guard checks, snapshots, and logs.
 author: Mike Jenkins
 license: MIT
 argument-hint: "[plan|security|run] [goal or target]"
 metadata:
-  hermes:
-    tags: [autoresearch, autonomous-iteration, evaluation, optimization, skills, prompts]
-    related_skills: [systematic-debugging, test-driven-development]
+  tags: [autoresearch, autonomous-iteration, evaluation, optimization, no-headless, skills, prompts]
 ---
 
-# Autoresearch — Autonomous Goal-directed Iteration
+# Autoresearch Agent — No-headless Autonomous Iteration
 
-Autoresearch is a controlled experiment loop:
+Autoresearch Agent is a controlled experiment loop:
 
+```text
 modify -> verify -> score -> keep or discard -> log -> repeat
+```
 
-The loop is useful only when the target has a measurable objective. It is not a general "make it better" mode. Establish a baseline first, change one thing at a time, and keep only changes that improve the metric or tie the metric with a simpler target.
+The active harness session is the agent. Do **not** spawn another model through print/headless CLI mode. This skill is meant to work inside Claude Code, Codex, Gemini CLI, Pi, Hermes, or any agent runtime that can read files, edit files, and run commands.
+
+Helper scripts are deterministic only:
+
+- `scripts/autoresearch_loop.py` runs verify/guard commands, snapshots files, logs results, and reverts regressions.
+- `scripts/eval_engine.py` emits judge prompts and scores JSON judgments supplied by the active harness.
+- `scripts/generate_dashboard.py` renders `results.tsv`.
+- `scripts/agent_cli.py` is only a compatibility notice; legacy headless invocation is disabled.
 
 ## When to Use
 
@@ -27,116 +34,95 @@ Use this skill when the user asks to:
 - Run `/autoresearch`
 - Run `/autoresearch-plan`
 - Run `/autoresearch-security`
-- Improve a skill, prompt, markdown file, or code file against a numeric metric
+- Improve a skill, prompt, markdown file, or code file against a measurable score
 - Iterate autonomously until a score improves
-- Run an overnight or bounded experiment loop
+- Run a bounded or overnight experiment loop
 - Optimize against binary eval criteria
 - Compare candidate changes with a keep/discard decision
 
 Do not use this skill when:
 
-- There is no mechanical or LLM-judged score
-- The task touches production infrastructure or datacenter systems without explicit change approval
-- The target is broad enough that one-change experiments cannot isolate cause and effect
+- There is no mechanical or harness-judged score
+- The task touches production infrastructure without explicit approval
+- The editable target is too broad for one-change experiments
 - The user wants a one-off edit rather than a measured loop
+
+## Mandatory No-headless Rule
+
+Never run a second LLM via headless/print commands for autoresearch. In particular, do not build the loop around commands such as model CLI print modes. The current harness is already the model runtime.
+
+Allowed:
+
+- Use the active harness's normal file, shell, search, and edit tools.
+- Run deterministic local commands such as tests, benchmarks, linters, parsers, and the helper scripts.
+- Ask the active harness to judge outputs directly in-session, then record JSON judgments.
+
+Not allowed:
+
+- Shelling out to another model to generate experiments.
+- Shelling out to another model to execute prompts.
+- Shelling out to another model to judge outputs.
 
 ## Subcommands and Modes
 
 | Mode | Purpose |
 |---|---|
-| `/autoresearch` | Run the modify -> verify -> keep/discard loop |
-| `/autoresearch-plan` | Interview for goal, scope, metric, direction, and verify command |
+| `/autoresearch` | Run the modify -> verify -> keep/discard loop in the active harness |
+| `/autoresearch-plan` | Create a validated run plan: goal, scope, metric, verify, guard, bounds |
 | `/autoresearch-security` | Run a STRIDE + OWASP + red-team audit loop |
 
-In Hermes, these are skill triggers rather than native slash commands. If the user writes `/autoresearch`, load this skill and run the appropriate workflow.
-
-## Backend Support
-
-The Python scripts can call different agent CLIs.
-
-Default behavior:
-
-1. Try Claude Code CLI if `claude` is installed
-2. Fall back to Hermes CLI if `hermes` is installed
-
-Override with CLI flags:
-
-```bash
-python scripts/autoresearch_loop.py \
-  --target target.md \
-  --program program.md \
-  --eval-config eval.json \
-  --agent-backend hermes \
-  --max-experiments 5
-```
-
-Supported backend flags:
-
-| Backend | Command behavior |
-|---|---|
-| `auto` | Try `claude`, then `hermes` |
-| `claude` | Run `claude -p <prompt> --output-format text` |
-| `hermes` | Run `hermes chat -Q -q <prompt>` |
-| `custom` | Run a user-supplied command template |
-
-Useful environment variables:
-
-```bash
-export AUTORESEARCH_AGENT_BACKEND=hermes
-export AUTORESEARCH_HERMES_MODEL=gpt-5.5
-
-# Optional custom command. It must print the final response to stdout.
-export AUTORESEARCH_AGENT_BACKEND=custom
-export AUTORESEARCH_AGENT_CMD='my-agent-command --prompt-file {prompt_file} --model {model}'
-```
-
-Custom command placeholders:
-
-- `{prompt_file}` — path to a temporary UTF-8 file containing the prompt
-- `{prompt}` — shell-quoted prompt text
-- `{model}` — shell-quoted model string
-
-Prefer `{prompt_file}` for large prompts.
+If the harness does not support slash commands, treat these as plain-text triggers and follow the matching workflow.
 
 ## Mandatory Baseline Gate
 
-Do not start the loop until the baseline is real.
+Do not start iterating until the baseline is real.
 
 Checklist:
 
-- [ ] The target file exists and is inside the allowed root
-- [ ] The metric command or eval suite runs once successfully
-- [ ] The baseline score is recorded
-- [ ] The user has approved the scope of files the loop may edit
-- [ ] A guard command is identified or explicitly omitted
+- [ ] Target file exists and is inside the allowed root
+- [ ] Editable scope is explicit
+- [ ] Verify command runs successfully
+- [ ] Metric parses to a single number, or binary eval criteria are ready
+- [ ] Direction is known: higher or lower is better
+- [ ] Guard command is identified or explicitly omitted
+- [ ] Baseline is recorded in `autoresearch-results/results.tsv`
 
-If there is no baseline number, stop and create one first.
+Mechanical baseline command:
 
-## Setup Phase
-
-1. Read the target and surrounding context.
-2. Define the goal as one quantifiable metric.
-3. Define the editable scope as explicit files or patterns.
-4. Define a guard command when regressions matter.
-5. Create or confirm `program.md`.
-6. Create or confirm `eval.json`.
-7. Run the baseline.
-8. Start the bounded or unbounded loop.
-
-Minimal files:
-
-```text
-program.md        Human strategy, constraints, and scope
-eval.json         Criteria and test prompts
-target.md         File being optimized
-autoresearch-results/results.tsv
+```bash
+python scripts/autoresearch_loop.py baseline \
+  --target target.md \
+  --verify-command './score.sh' \
+  --metric-regex 'Score: ([0-9.]+)' \
+  --direction higher \
+  --guard-command 'npm test'
 ```
 
-## Eval Modes
+## Core Loop Protocol
 
-### Mechanical Mode
+For each experiment:
 
-A command produces a parseable score. The loop maximizes it.
+1. Read the current target, `autoresearch-results/state.json`, and recent `results.tsv` rows.
+2. Pick exactly one focused change.
+3. Apply only that change.
+4. Run scoring:
+
+   ```bash
+   python scripts/autoresearch_loop.py score \
+     --target target.md \
+     --description 'short description of this one change'
+   ```
+
+5. Interpret result:
+   - `KEEP` means the candidate improved the metric or tied with a simpler target.
+   - `DISCARD` means the helper reverted the target to the best snapshot.
+   - `CRASH` means verify/guard failed and the helper reverted the target.
+6. Append observations to the run log if useful.
+7. Repeat until bounded count reached, user interrupts, or a stop rule triggers.
+
+## Mechanical Eval Mode
+
+Use this when a command can produce a numeric metric.
 
 Examples:
 
@@ -146,100 +132,70 @@ python benchmark.py
 ./validate.sh
 ```
 
-Use this when the quality signal is objective: coverage, latency, throughput, line count, pass count, bundle size, or an explicit score.
-
-### Binary Eval Mode
-
-An agent judges yes/no criteria across test prompts. Score is:
-
-criteria passed / total criteria
-
-Example `eval.json`:
-
-```json
-{
-  "criteria": [
-    {"id": 1, "question": "Does the output follow the requested format?"},
-    {"id": 2, "question": "Does it avoid placeholder text?"},
-    {"id": 3, "question": "Would this be usable without more edits?"}
-  ],
-  "test_prompts": [
-    "Summarize a 5-file PR into release notes",
-    "Explain a failed CI run from a log excerpt"
-  ]
-}
-```
-
-Run the judge directly:
+Dry-run a candidate verify command before using it:
 
 ```bash
-python scripts/eval_engine.py \
-  --eval-config eval.json \
-  --output-dir ./outputs/ \
-  --agent-backend hermes
+python scripts/autoresearch_loop.py run-verify \
+  --verify-command './score.sh' \
+  --metric-regex 'Score: ([0-9.]+)' \
+  --guard-command 'npm test'
 ```
 
-## Loop Protocol
+Metric requirements:
 
-For each experiment:
+- Outputs or exposes one parseable number
+- Deterministic enough for keep/discard decisions
+- Fast enough to run every iteration
+- Has clear direction: `higher` or `lower`
 
-1. Review current target, recent git history, and `results.tsv`.
-2. Pick one focused change.
-3. Apply that single change.
-4. Execute test prompts or mechanical verification.
-5. Run the guard command if configured.
-6. Score the result.
-7. Decide:
-   - Higher score -> keep
-   - Same score with simpler target -> keep
-   - Worse score -> revert
-   - Crash or judge failure -> revert and log as crash
-8. Append the result to `results.tsv`.
-9. Repeat until interrupted, bounded count reached, or stuck threshold hit.
+## Harness-judged Binary Eval Mode
 
-## Running the Script
+Use this for prompts, skills, and documents where quality must be judged against binary yes/no criteria.
 
-Bounded smoke run:
+1. Generate outputs from the target using the active harness.
+2. Emit a judge prompt:
 
-```bash
-python scripts/autoresearch_loop.py \
-  --target target.md \
-  --program program.md \
-  --eval-config eval.json \
-  --runs-per-experiment 1 \
-  --max-experiments 2 \
-  --agent-backend hermes
-```
+   ```bash
+   python scripts/eval_engine.py \
+     --eval-config eval.json \
+     --output-dir ./outputs \
+     --emit-prompt \
+     --prompt-file ./autoresearch-results/judge-prompt.md
+   ```
 
-Notes:
+3. The active harness reads the prompt and writes judgments JSON.
+4. Score the judgments:
 
-- `--max-experiments 0` means unlimited.
-- `--allowed-root` defaults to the current working directory.
-- `.py` targets require `--allow-exec` because the loop rewrites and executes that file.
-- Do not pass `--allow-exec` unless the sandbox and target are intentionally disposable.
-- `--guard "<command>"` runs after every keep-eligible experiment (score improvement, or score tie with smaller file); if it exits non-zero the change is discarded.
+   ```bash
+   python scripts/eval_engine.py \
+     --eval-config eval.json \
+     --output-dir ./outputs \
+     --judgments-file ./autoresearch-results/judgments.json \
+     --results-file ./autoresearch-results/eval-results.json
+   ```
+
+## Planning Mode
+
+For `/autoresearch-plan`, load `references/plan-workflow.md`.
+
+The output must include:
+
+- Goal
+- Editable scope
+- Metric
+- Direction
+- Verify command
+- Guard command or explicit omission
+- Baseline value
+- Bounded or unbounded loop choice
+
+Dry-run verify and guard before declaring the plan ready.
 
 ## Security Mode
 
 For `/autoresearch-security`, load `references/security-workflow.md`.
 
 Use it for scoped audits against code that can be inspected and tested. Log findings with file paths, evidence, severity, and reproduction notes. Do not auto-fix broad security issues unless the user explicitly asks.
-
-## Planning Mode
-
-For `/autoresearch-plan`, load `references/plan-workflow.md`.
-
-The output is a ready run configuration:
-
-- Goal
-- Scope
-- Metric
-- Direction
-- Verify command
-- Guard command
-- Bounded or unbounded loop choice
-
-Dry-run the verify command before declaring the plan ready.
 
 ## Reference Files
 
@@ -250,35 +206,39 @@ Load only when needed:
 | `references/autonomous-loop-protocol.md` | Running the core loop |
 | `references/plan-workflow.md` | Planning a run |
 | `references/security-workflow.md` | Security audit mode |
-| `references/core-principles.md` | Reviewing the seven principles |
+| `references/core-principles.md` | Reviewing the principles |
 | `references/results-logging.md` | Managing `results.tsv` |
 | `references/eval-criteria-guide.md` | Writing binary criteria |
 | `references/program-template.md` | Creating `program.md` |
 
+## Stop Rules
+
+Stop and report instead of continuing when:
+
+- Verify command is invalid or flaky after three repair attempts
+- Guard fails on the baseline
+- The same failure mode repeats five times
+- The next improvement requires changing unapproved files
+- The target touches production or secrets unexpectedly
+- The bounded experiment count is reached
+
 ## Common Pitfalls
 
 1. Starting without a baseline.
-   - Fix: run the metric first and record the score.
-
+   - Fix: run the baseline command and record the score.
 2. Stacking multiple changes.
    - Fix: one focused change per experiment.
-
-3. Using subjective scoring.
+3. Using subjective scoring without criteria.
    - Fix: write binary criteria or use a mechanical metric.
-
 4. Forgetting to revert failures.
-   - Fix: failed, worse, crashed, and judge-error runs revert to the prior kept state.
-
-5. Running on a live production path.
-   - Fix: copy targets into a disposable branch or workspace before starting.
-
-6. Assuming Claude Code is required.
-   - Fix: use `--agent-backend hermes` or a custom command template.
+   - Fix: let `autoresearch_loop.py score` do keep/discard and rollback.
+5. Running a model CLI as a subprocess.
+   - Fix: keep all agent work in the active harness session.
 
 ## Verification Checklist
 
-- [ ] `python scripts/autoresearch_loop.py --help` shows `--agent-backend`
-- [ ] `python scripts/eval_engine.py --help` shows `--agent-backend`
-- [ ] A custom backend smoke test completes a bounded run
-- [ ] Hermes can load the skill with `skill_view autoresearch`
-- [ ] The Library catalog includes `autoresearch`
+- [ ] `python scripts/autoresearch_loop.py --help` shows `baseline`, `score`, and `run-verify`
+- [ ] `python scripts/eval_engine.py --help` does not require an agent backend
+- [ ] Mechanical baseline and score smoke tests pass
+- [ ] Binary eval can emit a prompt and score supplied judgments
+- [ ] `scripts/agent_cli.py` reports that headless invocation is disabled

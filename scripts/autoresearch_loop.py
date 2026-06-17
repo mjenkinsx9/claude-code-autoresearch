@@ -1,712 +1,485 @@
 #!/usr/bin/env python3
 """
-Autoresearch Loop Runner — Autonomous Self-Improvement System
+Autoresearch Agent loop helper — no-headless state manager.
 
-Based on Karpathy's autoresearch: modify, test, score, keep/discard, repeat.
-This script orchestrates the full experiment loop for any target file.
+This script never invokes an LLM CLI. The active harness (Claude Code, Codex,
+Gemini CLI, Pi, Hermes, or another agent) performs the thinking and file edits
+inside its normal interactive/session context. This helper does only the
+repeatable, deterministic work:
 
-Usage:
-    python autoresearch_loop.py \
-        --target path/to/SKILL.md \
-        --program path/to/program.md \
-        --eval-config path/to/eval.json \
-        --runs-per-experiment 5 \
-        --output-dir ./autoresearch-results/
+- run the mechanical verify command
+- extract a numeric metric
+- run an optional guard command
+- snapshot candidates and kept versions
+- keep improvements or revert regressions
+- append results.tsv
 
-The loop runs indefinitely until manually stopped (Ctrl+C).
+Typical flow:
+
+    python scripts/autoresearch_loop.py baseline \
+      --target target.md \
+      --verify-command './score.sh' \
+      --direction higher
+
+    # active agent makes exactly one change to target.md
+
+    python scripts/autoresearch_loop.py score \
+      --target target.md \
+      --description 'tightened routing examples'
 """
 
+from __future__ import annotations
+
 import argparse
+import csv
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
-import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from agent_cli import run_agent_prompt
-
-
-def _force_utf8_output():
-    """Windows consoles default to cp1252; emoji in status output must not kill the loop."""
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8", errors="replace")
-
-
-def load_config(eval_config_path: str) -> dict:
-    """Load the eval configuration."""
-    with open(eval_config_path, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def load_program(program_path: str) -> str:
-    """Load the program.md instructions."""
-    with open(program_path, encoding="utf-8") as f:
-        return f.read()
+RESULTS_HEADER = [
+    "experiment",
+    "score",
+    "max_score",
+    "best_score",
+    "status",
+    "description",
+    "timestamp",
+    "direction",
+    "verify_command",
+    "guard_command",
+    "snapshot",
+]
 
 
-def read_target(target_path: str) -> str:
-    """Read the current state of the target file."""
-    with open(target_path, encoding="utf-8") as f:
-        return f.read()
+@dataclass
+class CommandResult:
+    command: str
+    returncode: int
+    stdout: str
+    stderr: str
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0
+
+    @property
+    def combined_output(self) -> str:
+        return "\n".join(part for part in (self.stdout, self.stderr) if part)
 
 
-def write_target(target_path: str, content: str):
-    """Write updated content to the target file with validation."""
-    if not content or not isinstance(content, str):
-        raise ValueError(f"Invalid content to write: empty or non-string")
-    # Validate UTF-8 encoding
-    content.encode("utf-8")
-    with open(target_path, "w", encoding="utf-8") as f:
-        f.write(content)
-
-
-def backup_target(target_path: str, backup_dir: str, experiment_num: int) -> str:
-    """Create a backup of the target file before modification."""
-    backup_path = os.path.join(backup_dir, f"experiment_{experiment_num:03d}_before.bak")
-    try:
-        shutil.copy2(target_path, backup_path)
-    except (IOError, OSError) as e:
-        print(f"WARNING: Backup failed: {e}", file=sys.stderr)
-        raise
-    return backup_path
-
-
-def revert_target(target_path: str, backup_path: str):
-    """Revert target to backup."""
-    try:
-        shutil.copy2(backup_path, target_path)
-    except (IOError, OSError) as e:
-        print(f"WARNING: Revert failed: {e}", file=sys.stderr)
-        raise
-
-
-def run_guard(guard_cmd: str, timeout: int = 600) -> bool:
-    """Run the optional guard command. Pass = exit 0. No guard = pass.
-
-    shell=True is intentional: the guard is an operator-supplied shell command
-    from the --guard CLI flag (e.g. "npm test && npx tsc --noEmit"), the same
-    trust level as the existing custom-backend command template. It must NEVER
-    be built from LLM output or target-file content.
-    """
-    if not guard_cmd:
-        return True
+def run_shell_command(command: str, cwd: str | None = None, timeout: int = 120) -> CommandResult:
+    """Run a user-supplied verification or guard command."""
     try:
         result = subprocess.run(
-            guard_cmd, shell=True, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout,
+            command,
+            shell=True,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
-    except subprocess.TimeoutExpired:
-        print(f"  Guard timed out after {timeout}s — treating as failure", file=sys.stderr)
-        return False
-    if result.returncode != 0:
-        tail = (result.stdout + result.stderr)[-500:]
-        print(f"  Guard failed (exit {result.returncode}):\n{tail}", file=sys.stderr)
-    return result.returncode == 0
-
-
-def resolve_runs_per_experiment(cli_value, eval_config: dict) -> int:
-    """CLI flag > eval config 'runs_per_experiment' > default 5."""
-    if cli_value is not None:
-        return cli_value
-    return int(eval_config.get("runs_per_experiment", 5))
-
-
-def save_snapshot(target_path: str, snapshot_dir: str, experiment_num: int, status: str):
-    """Save a snapshot of the target file after experiment."""
-    snapshot_path = os.path.join(snapshot_dir, f"experiment_{experiment_num:03d}_{status}.md")
-    try:
-        shutil.copy2(target_path, snapshot_path)
-    except (IOError, OSError) as e:
-        print(f"WARNING: Snapshot save failed: {e}", file=sys.stderr)
-        raise
-    return snapshot_path
-
-
-def generate_experiment(
-    target_content: str,
-    program: str,
-    results_history: list,
-    eval_config: dict,
-    model: str = "opus",
-    agent_backend: str = "auto",
-    agent_command: str = "",
-) -> dict:
-    """
-    Use an LLM to generate the next experiment — what change to make to the target.
-
-    Returns:
-        {"description": str, "new_content": str, "reasoning": str}
-    """
-    # Build context from history
-    history_text = ""
-    if results_history:
-        history_text = "## Previous experiments:\n"
-        for r in results_history[-20:]:  # Last 20 experiments
-            history_text += f"- Exp {r['experiment']}: {r['score']}/{r['max_score']} ({r['status']}) — {r['description']}\n"
-        history_text += "\n"
-
-    criteria_text = "\n".join(
-        f"- {c['question']}" for c in eval_config.get("criteria", [])
-    )
-
-    prompt = f"""You are an autonomous researcher running experiments to improve a target file.
-
-## Program instructions:
-{program}
-
-## Current target file content:
-```
-{target_content}
-```
-
-## Eval criteria (binary yes/no):
-{criteria_text}
-
-{history_text}
-
-## Your task:
-Propose ONE focused experiment — a single change to the target file that you believe will improve the eval score.
-
-Respond with ONLY a JSON object:
-{{
-  "description": "short description of what this experiment tries",
-  "reasoning": "why you think this will help (1-2 sentences)",
-  "new_content": "the COMPLETE new content of the target file with your change applied"
-}}
-
-Remember:
-- Make one focused change at a time
-- Simpler is better — if you can improve by removing, do it
-- Don't stack multiple changes
-- If recent experiments failed, try a different approach
-- Think about which eval criteria fail most and target those"""
-
-    result = run_agent_prompt(
-        prompt,
-        model=model,
-        timeout=300,
-        backend=agent_backend,
-        command_template=agent_command,
-    )
-    if not result.ok:
-        print(f"  Agent backend failed ({result.backend}): {result.stderr[:500]}")
-        return None
-
-    response = result.stdout.strip()
-
-    # Extract JSON
-    json_str = response
-    if "```" in json_str:
-        parts = json_str.split("```")
-        for part in parts[1:]:
-            if part.startswith("json"):
-                json_str = part[4:].strip()
-                break
-            elif part.strip().startswith("{"):
-                json_str = part.strip()
-                break
-
-    try:
-        return json.loads(json_str)
-    except json.JSONDecodeError as e:
-        print(f"  Error parsing experiment JSON from {result.backend}: {e}")
-        return None
-
-
-def execute_target(
-    target_path: str,
-    test_prompt: str,
-    eval_config: dict,
-    run_index: int,
-    output_dir: str,
-    model: str = "sonnet",
-    allow_exec: bool = False,
-    agent_backend: str = "auto",
-    agent_command: str = "",
-) -> str:
-    """
-    Execute the target file against a test prompt and return the output.
-    How this works depends on the target type.
-    """
-    target_content = read_target(target_path)
-    target_ext = Path(target_path).suffix.lower()
-
-    # For skills/prompts: feed the skill + test prompt to an LLM
-    if target_ext in (".md", ".txt"):
-        prompt = f"""Follow the instructions in the skill/prompt below to complete the task.
-
-## Skill/Prompt instructions:
-{target_content}
-
-## Task:
-{test_prompt}
-
-Complete the task according to the instructions above."""
-
-        result = run_agent_prompt(
-            prompt,
-            model=model,
-            timeout=180,
-            backend=agent_backend,
-            command_template=agent_command,
+        return CommandResult(command, result.returncode, result.stdout or "", result.stderr or "")
+    except subprocess.TimeoutExpired as exc:
+        return CommandResult(
+            command,
+            124,
+            exc.stdout or "",
+            f"command timed out after {timeout}s",
         )
-        if result.ok:
-            output = result.stdout.strip()
-            # Save output
-            output_file = os.path.join(output_dir, f"run_{run_index:02d}.txt")
-            with open(output_file, "w", encoding="utf-8") as f:
-                f.write(output)
-            return output
-
-        # Include partial stdout for debugging
-        partial = result.stdout[:500] if result.stdout else ""
-        return (
-            f"ERROR: {result.backend} returned exit code {result.returncode}\n"
-            f"{result.stderr}\n--- STDOUT (partial) ---\n{partial}"
-        )
-
-    # For Python scripts: execute them (requires --allow-exec; LLM-authored code is untrusted)
-    elif target_ext == ".py":
-        if not allow_exec:
-            return ("ERROR: refusing to execute .py target without --allow-exec. "
-                    "The loop rewrites this file with LLM-generated code on every iteration; "
-                    "pass --allow-exec only if you understand the risk.")
-        try:
-            result = subprocess.run(
-                [sys.executable, target_path],
-                input=test_prompt,
-                capture_output=True, text=True, timeout=120,
-                encoding="utf-8", errors="replace",
-            )
-            output = result.stdout + result.stderr
-            output_file = os.path.join(output_dir, f"run_{run_index:02d}.txt")
-            with open(output_file, "w", encoding="utf-8") as f:
-                f.write(output)
-            return output
-        except subprocess.TimeoutExpired:
-            return "ERROR: script timed out (>120s)"
-        except (FileNotFoundError, OSError) as e:
-            return f"ERROR: failed to execute target: {e}"
-
-    else:
-        return f"ERROR: unsupported target type '{target_ext}'"
+    except OSError as exc:
+        return CommandResult(command, 127, "", str(exc))
 
 
-def run_eval(
-    outputs: list[str],
-    eval_config: dict,
-    model: str = "sonnet",
-    agent_backend: str = "auto",
-    agent_command: str = "",
-) -> dict:
-    """Run the binary eval suite on a list of outputs."""
-    from eval_engine import run_eval_suite
-    return run_eval_suite(
-        outputs,
-        eval_config["criteria"],
-        model,
-        verbose=False,
-        agent_backend=agent_backend,
-        agent_command=agent_command,
-    )
-
-
-def _sanitize_tsv_field(value) -> str:
-    """Flatten tabs/newlines/control chars so one cell can't break the TSV schema."""
-    s = str(value) if value is not None else ""
-    # Replace field/record separators and CR with spaces; drop other control chars.
-    return "".join(
-        " " if ch in ("\t", "\n", "\r") else ch
-        for ch in s
-        if ch == "\t" or ch == "\n" or ch == "\r" or ord(ch) >= 32
-    ).strip()
-
-
-def append_results_tsv(results_file: str, entry: dict):
-    """Append an entry to results.tsv."""
-    if not os.path.exists(results_file):
-        with open(results_file, "w", encoding="utf-8") as f:
-            f.write("experiment\tscore\tmax_score\tstatus\tdescription\ttimestamp\n")
-
-    fields = [
-        _sanitize_tsv_field(entry["experiment"]),
-        _sanitize_tsv_field(entry["score"]),
-        _sanitize_tsv_field(entry["max_score"]),
-        _sanitize_tsv_field(entry["status"]),
-        _sanitize_tsv_field(entry["description"]),
-        _sanitize_tsv_field(entry["timestamp"]),
-    ]
-    with open(results_file, "a", encoding="utf-8") as f:
-        f.write("\t".join(fields) + "\n")
-
-
-def print_banner(experiment_num: int, description: str):
-    """Print experiment start banner."""
-    print(f"\n{'='*60}")
-    print(f"  EXPERIMENT {experiment_num:03d}")
-    print(f"  {description}")
-    print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'='*60}\n")
-
-
-def print_result(entry: dict, best_score: int):
-    """Print experiment result."""
-    emoji = "✅" if entry["status"] == "keep" else "❌" if entry["status"] == "discard" else "💥"
-    print(f"\n{emoji} Experiment {entry['experiment']}: "
-          f"{entry['score']}/{entry['max_score']} — {entry['status'].upper()}")
-    print(f"   {entry['description']}")
-    print(f"   Best so far: {best_score}/{entry['max_score']}")
-
-
-def main():
-    _force_utf8_output()
-    parser = argparse.ArgumentParser(description="Autoresearch Loop Runner")
-    parser.add_argument("--target", required=True, help="Path to target file to optimize")
-    parser.add_argument("--program", required=True, help="Path to program.md instructions")
-    parser.add_argument("--eval-config", required=True, help="Path to eval config JSON")
-    parser.add_argument("--runs-per-experiment", type=int, default=None,
-                        help="Number of test runs per experiment "
-                             "(default: eval config 'runs_per_experiment', else 5)")
-    parser.add_argument("--output-dir", default="./autoresearch-results/",
-                        help="Directory for results and snapshots")
-    parser.add_argument("--experiment-model", default="opus",
-                        help="Model for generating experiments (default: opus)")
-    parser.add_argument("--execution-model", default="sonnet",
-                        help="Model for executing target (default: sonnet)")
-    parser.add_argument("--eval-model", default="sonnet",
-                        help="Model for evaluation judging (default: sonnet)")
-    parser.add_argument("--max-experiments", type=int, default=0,
-                        help="Max experiments to run (0 = infinite, default: 0)")
-    parser.add_argument("--allowed-root", default=None,
-                        help="Restrict --target to paths under this directory (default: current working directory)")
-    parser.add_argument("--allow-exec", action="store_true",
-                        help="Permit executing .py targets as subprocesses. Dangerous: the loop "
-                             "rewrites the target with LLM-generated code every iteration.")
-    parser.add_argument("--guard", default="",
-                        help="Optional command that must exit 0 for any change to be kept "
-                             "(e.g. 'npm test'). Failing the guard discards the experiment.")
-    parser.add_argument("--agent-backend", default=os.getenv("AUTORESEARCH_AGENT_BACKEND", "auto"),
-                        help="Agent CLI backend: auto, claude, hermes, or custom (default: auto)")
-    parser.add_argument("--agent-command", default=os.getenv("AUTORESEARCH_AGENT_CMD", ""),
-                        help="Custom agent command template. Supports {prompt_file}, {prompt}, and {model}.")
-    args = parser.parse_args()
-
-    # Sandbox: resolve --target and require it to live under --allowed-root (default: CWD).
-    allowed_root = Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve()
-    target_resolved = Path(args.target).resolve()
+def ensure_target_allowed(target: Path, allowed_root: Path) -> Path:
+    target = target.resolve()
+    allowed_root = allowed_root.resolve()
     try:
-        target_resolved.relative_to(allowed_root)
+        target.relative_to(allowed_root)
     except ValueError:
-        print(f"ERROR: --target {target_resolved} is not under --allowed-root {allowed_root}. "
-              f"Pass --allowed-root to widen the sandbox if this is intentional.", file=sys.stderr)
-        sys.exit(2)
-    if not target_resolved.exists():
-        print(f"ERROR: --target {target_resolved} does not exist.", file=sys.stderr)
-        sys.exit(2)
-    args.target = str(target_resolved)
-    if Path(args.target).suffix.lower() == ".py" and not args.allow_exec:
-        print(f"ERROR: target is a .py file but --allow-exec was not passed. "
-              f"The loop would execute LLM-rewritten Python on every iteration; refusing.", file=sys.stderr)
-        sys.exit(2)
-
-    # Setup directories
-    output_dir = Path(args.output_dir)
-    snapshots_dir = output_dir / "snapshots"
-    backups_dir = output_dir / "backups"
-    runs_dir = output_dir / "runs"
-
-    for d in [output_dir, snapshots_dir, backups_dir, runs_dir]:
-        d.mkdir(parents=True, exist_ok=True)
-
-    results_file = str(output_dir / "results.tsv")
-
-    # Load configuration
-    eval_config = load_config(args.eval_config)
-    args.runs_per_experiment = resolve_runs_per_experiment(
-        args.runs_per_experiment, eval_config
-    )
-    program = load_program(args.program)
-    test_prompts = eval_config.get("test_prompts", ["Default test"])
-
-    # Add eval_engine to path
-    script_dir = Path(__file__).parent
-    sys.path.insert(0, str(script_dir))
-
-    print(f"\n{'#'*60}")
-    print(f"  AUTORESEARCH LOOP")
-    print(f"  Target: {args.target}")
-    print(f"  Criteria: {len(eval_config.get('criteria', []))}")
-    print(f"  Test prompts: {len(test_prompts)}")
-    print(f"  Runs per experiment: {args.runs_per_experiment}")
-    print(f"  Agent backend: {args.agent_backend}")
-    print(f"  Max score per experiment: "
-          f"{len(eval_config.get('criteria', [])) * len(test_prompts) * args.runs_per_experiment}")
-    print(f"{'#'*60}\n")
-
-    # State
-    results_history = []
-    best_score = -1
-    experiment_num = 0
-    consecutive_failures = 0
-    MAX_CONSECUTIVE_FAILURES = 5
-
-    # Establish baseline
-    print("Establishing baseline...")
-    experiment_num += 1
-    backup_path = backup_target(args.target, str(backups_dir), experiment_num)
-
-    exp_runs_dir = runs_dir / f"experiment_{experiment_num:03d}"
-    exp_runs_dir.mkdir(exist_ok=True)
-
-    all_outputs = []
-    for prompt_idx, test_prompt in enumerate(test_prompts):
-        for run_idx in range(args.runs_per_experiment):
-            print(f"  Baseline run: prompt {prompt_idx+1}/{len(test_prompts)}, "
-                  f"run {run_idx+1}/{args.runs_per_experiment}")
-            output = execute_target(
-                args.target, test_prompt, eval_config,
-                prompt_idx * args.runs_per_experiment + run_idx,
-                str(exp_runs_dir), args.execution_model,
-                allow_exec=args.allow_exec,
-                agent_backend=args.agent_backend,
-                agent_command=args.agent_command,
-            )
-            all_outputs.append(output)
-
-    # Score baseline
-    eval_results = run_eval(
-        all_outputs,
-        eval_config,
-        args.eval_model,
-        agent_backend=args.agent_backend,
-        agent_command=args.agent_command,
-    )
-    baseline_crashes = sum(1 for o in all_outputs if o.startswith("ERROR:"))
-    baseline_judge_errors = eval_results.get("errors") or []
-    if baseline_crashes or baseline_judge_errors:
-        print(
-            f"ERROR: baseline is not trustworthy — "
-            f"{baseline_crashes}/{len(all_outputs)} runs crashed, "
-            f"{len(baseline_judge_errors)} judge error(s). "
-            f"Fix the agent backend or eval config before starting the loop.",
-            file=sys.stderr,
+        raise SystemExit(
+            f"ERROR: --target {target} is not under --allowed-root {allowed_root}. "
+            "Pass --allowed-root to widen the sandbox if intentional."
         )
-        if baseline_judge_errors:
-            print(f"First judge error: {baseline_judge_errors[0]}", file=sys.stderr)
-        sys.exit(2)
-    best_score = eval_results["total_yes"]
-    max_score = eval_results["max_score"]
+    if not target.exists():
+        raise SystemExit(f"ERROR: --target {target} does not exist.")
+    if not target.is_file():
+        raise SystemExit(f"ERROR: --target {target} is not a file.")
+    return target
 
-    if args.guard and not run_guard(args.guard):
-        print("ERROR: --guard command fails on the unmodified target. "
-              "Fix the guard before starting the loop.", file=sys.stderr)
-        sys.exit(2)
 
-    entry = {
-        "experiment": f"{experiment_num:03d}",
-        "score": best_score,
-        "max_score": max_score,
-        "status": "keep",
-        "description": "baseline — original target file",
-        "timestamp": datetime.now().isoformat(),
+def make_dirs(output_dir: Path) -> dict[str, Path]:
+    paths = {
+        "output": output_dir,
+        "snapshots": output_dir / "snapshots",
+        "runs": output_dir / "runs",
     }
-    results_history.append(entry)
-    append_results_tsv(results_file, entry)
-    save_snapshot(args.target, str(snapshots_dir), experiment_num, "keep")
+    for path in paths.values():
+        path.mkdir(parents=True, exist_ok=True)
+    return paths
 
-    print(f"\n🎯 Baseline score: {best_score}/{max_score} ({eval_results['score_pct']}%)")
-    print(f"\nStarting autonomous experimentation loop...\n")
 
-    # Main loop
+def state_path(output_dir: Path) -> Path:
+    return output_dir / "state.json"
+
+
+def results_path(output_dir: Path) -> Path:
+    return output_dir / "results.tsv"
+
+
+def load_state(output_dir: Path) -> dict[str, Any]:
+    path = state_path(output_dir)
+    if not path.exists():
+        raise SystemExit(
+            f"ERROR: no autoresearch state found at {path}. "
+            "Run the 'baseline' command first."
+        )
+    return json.loads(path.read_text())
+
+
+def save_state(output_dir: Path, state: dict[str, Any]) -> None:
+    path = state_path(output_dir)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+
+
+def sanitize_tsv_field(value: Any) -> str:
+    s = "" if value is None else str(value)
+    return "".join(" " if ch in ("\t", "\n", "\r") else ch for ch in s if ch in ("\t", "\n", "\r") or ord(ch) >= 32).strip()
+
+
+def append_results(output_dir: Path, row: dict[str, Any]) -> None:
+    path = results_path(output_dir)
+    exists = path.exists()
+    with path.open("a", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=RESULTS_HEADER, delimiter="\t", extrasaction="ignore")
+        if not exists:
+            writer.writeheader()
+        writer.writerow({key: sanitize_tsv_field(row.get(key, "")) for key in RESULTS_HEADER})
+
+
+def metric_from_output(output: str, metric_regex: str | None = None) -> float:
+    """Extract a numeric metric from command output."""
+    if metric_regex:
+        match = re.search(metric_regex, output, re.MULTILINE | re.DOTALL)
+        if not match:
+            raise ValueError(f"metric regex did not match: {metric_regex!r}")
+        raw = match.group(1) if match.groups() else match.group(0)
+    else:
+        numbers = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", output)
+        if not numbers:
+            raise ValueError("no number found in verify output")
+        raw = numbers[-1]
     try:
-        while True:
-            experiment_num += 1
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"extracted metric is not numeric: {raw!r}") from exc
 
-            if args.max_experiments > 0 and experiment_num > args.max_experiments:
-                print(f"\nReached max experiments ({args.max_experiments}). Stopping.")
-                break
 
-            # Generate experiment
-            print(f"Generating experiment {experiment_num:03d}...")
-            current_content = read_target(args.target)
-            experiment = generate_experiment(
-                current_content, program, results_history,
-                eval_config, args.experiment_model,
-                agent_backend=args.agent_backend,
-                agent_command=args.agent_command,
-            )
+def format_score(score: float | None) -> str:
+    if score is None:
+        return ""
+    if float(score).is_integer():
+        return str(int(score))
+    return f"{score:.6g}"
 
-            if experiment is None:
-                print("  Failed to generate experiment, retrying...")
-                consecutive_failures += 1
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    print(f"\nFATAL: {MAX_CONSECUTIVE_FAILURES} consecutive failures to generate experiment. Stopping.")
-                    break
-                time.sleep(5)
-                continue
 
-            description = experiment.get("description", "unknown change")
-            new_content = experiment.get("new_content", "")
+def is_improvement(score: float, best_score: float, direction: str) -> bool:
+    if direction == "higher":
+        return score > best_score
+    if direction == "lower":
+        return score < best_score
+    raise ValueError(f"unsupported direction: {direction}")
 
-            # Validate new_content before writing. We haven't touched the target yet,
-            # so just skip — calling revert_target here would undo the last KEPT change
-            # (backup_path still points at the snapshot taken before the prior experiment).
-            if not new_content or not isinstance(new_content, str):
-                print(f"  ERROR: LLM returned invalid content (empty or non-string), skipping experiment")
-                consecutive_failures += 1
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    print(f"\nFATAL: {MAX_CONSECUTIVE_FAILURES} consecutive invalid experiments. Stopping.")
-                    break
-                continue
 
-            print_banner(experiment_num, description)
-            print(f"  Reasoning: {experiment.get('reasoning', 'none')}")
+def is_tie(score: float, best_score: float) -> bool:
+    return score == best_score
 
-            # Backup and apply change
-            backup_path = backup_target(args.target, str(backups_dir), experiment_num)
-            write_target(args.target, new_content)
 
-            # Run test executions
-            exp_runs_dir = runs_dir / f"experiment_{experiment_num:03d}"
-            exp_runs_dir.mkdir(exist_ok=True)
+def snapshot_target(target: Path, snapshots_dir: Path, experiment: int, status: str) -> Path:
+    suffix = target.suffix or ".txt"
+    destination = snapshots_dir / f"experiment_{experiment:03d}_{status}{suffix}"
+    shutil.copy2(target, destination)
+    return destination
 
-            all_outputs = []
-            crash = False
-            for prompt_idx, test_prompt in enumerate(test_prompts):
-                for run_idx in range(args.runs_per_experiment):
-                    print(f"  Run: prompt {prompt_idx+1}/{len(test_prompts)}, "
-                          f"run {run_idx+1}/{args.runs_per_experiment}")
-                    output = execute_target(
-                        args.target, test_prompt, eval_config,
-                        prompt_idx * args.runs_per_experiment + run_idx,
-                        str(exp_runs_dir), args.execution_model,
-                        allow_exec=args.allow_exec,
-                        agent_backend=args.agent_backend,
-                        agent_command=args.agent_command,
-                    )
-                    if output.startswith("ERROR:"):
-                        print(f"    ⚠️  {output}")
-                        crash = True
-                    all_outputs.append(output)
 
-            if crash:
-                # At least one run crashed — warn but continue scoring with partial outputs
-                crashed_count = sum(1 for o in all_outputs if o.startswith("ERROR:"))
-                print(f"  WARNING: {crashed_count}/{len(all_outputs)} runs crashed")
-                entry = {
-                    "experiment": f"{experiment_num:03d}",
-                    "score": 0,
-                    "max_score": max_score,
-                    "status": "crash",
-                    "description": description,
-                    "timestamp": datetime.now().isoformat(),
-                }
-                results_history.append(entry)
-                append_results_tsv(results_file, entry)
-                revert_target(args.target, backup_path)
-                save_snapshot(args.target, str(snapshots_dir), experiment_num, "crash")
-                print_result(entry, best_score)
-                consecutive_failures += 1
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    print(f"\nFATAL: {MAX_CONSECUTIVE_FAILURES} consecutive crashed experiments. Stopping.")
-                    break
-                continue
+def revert_to_snapshot(target: Path, snapshot: str) -> None:
+    shutil.copy2(snapshot, target)
 
-            # Score
-            eval_results = run_eval(
-                all_outputs,
-                eval_config,
-                args.eval_model,
-                agent_backend=args.agent_backend,
-                agent_command=args.agent_command,
-            )
-            score = eval_results["total_yes"]
-            judge_errors = eval_results.get("errors") or []
 
-            if judge_errors:
-                # Judge failed on ≥1 output — don't treat the zero-score as a real regression
-                print(f"  WARNING: judge errored on {len(judge_errors)}/{len(all_outputs)} output(s); "
-                      f"marking experiment as crash. First error: {judge_errors[0]}")
-                status = "crash"
-                # Consistent with the execute-crash branch above: crashes log score 0 so the
-                # ideator's history view and the dashboard don't treat a partial aggregate as
-                # a real regression. The full partial total is preserved in eval_results.json.
-                score = 0
-                revert_target(args.target, backup_path)
-                save_snapshot(args.target, str(snapshots_dir), experiment_num, "crash")
-            elif score > best_score:
-                if run_guard(args.guard):
-                    status = "keep"
-                    best_score = score
-                    save_snapshot(args.target, str(snapshots_dir), experiment_num, "keep")
-                else:
-                    status = "discard"
-                    description = f"{description} (guard failed)"
-                    revert_target(args.target, backup_path)
-                    save_snapshot(args.target, str(snapshots_dir), experiment_num, "discard")
-            elif score == best_score and len(new_content) < len(current_content):
-                # Tie on score but simpler: per SKILL.md "Equal results + less code = KEEP"
-                if run_guard(args.guard):
-                    status = "keep"
-                    save_snapshot(args.target, str(snapshots_dir), experiment_num, "keep")
-                else:
-                    status = "discard"
-                    description = f"{description} (guard failed)"
-                    revert_target(args.target, backup_path)
-                    save_snapshot(args.target, str(snapshots_dir), experiment_num, "discard")
+def run_verify(args: argparse.Namespace, verify_command: str, metric_regex: str | None) -> tuple[CommandResult, float | None, str | None]:
+    result = run_shell_command(verify_command, cwd=args.cwd, timeout=args.timeout)
+    if not result.ok:
+        return result, None, f"verify command exited {result.returncode}"
+    try:
+        score = metric_from_output(result.combined_output, metric_regex)
+        return result, score, None
+    except ValueError as exc:
+        return result, None, str(exc)
+
+
+def run_guard(args: argparse.Namespace, guard_command: str | None) -> tuple[CommandResult | None, str | None]:
+    if not guard_command:
+        return None, None
+    result = run_shell_command(guard_command, cwd=args.cwd, timeout=args.timeout)
+    if result.ok:
+        return result, None
+    return result, f"guard command exited {result.returncode}"
+
+
+def command_output_file(output_dir: Path, experiment: int, name: str, result: CommandResult | None) -> None:
+    if result is None:
+        return
+    run_dir = output_dir / "runs" / f"experiment_{experiment:03d}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = run_dir / f"{name}.txt"
+    path.write_text(
+        f"$ {result.command}\n"
+        f"exit={result.returncode}\n\n"
+        f"--- stdout ---\n{result.stdout}\n\n"
+        f"--- stderr ---\n{result.stderr}\n"
+    )
+
+
+def cmd_baseline(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir).resolve()
+    paths = make_dirs(output_dir)
+    target = ensure_target_allowed(Path(args.target), Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve())
+    args.cwd = args.cwd or str(Path.cwd())
+
+    if state_path(output_dir).exists() and not args.force:
+        raise SystemExit(f"ERROR: {state_path(output_dir)} already exists. Pass --force to replace the baseline.")
+
+    verify_result, score, verify_error = run_verify(args, args.verify_command, args.metric_regex)
+    command_output_file(output_dir, 1, "verify", verify_result)
+    if verify_error:
+        print(f"ERROR: invalid baseline verify result: {verify_error}", file=sys.stderr)
+        print(verify_result.combined_output[-1000:], file=sys.stderr)
+        return 1
+
+    guard_result, guard_error = run_guard(args, args.guard_command)
+    command_output_file(output_dir, 1, "guard", guard_result)
+    if guard_error:
+        print(f"ERROR: baseline guard failed: {guard_error}", file=sys.stderr)
+        if guard_result:
+            print(guard_result.combined_output[-1000:], file=sys.stderr)
+        return 1
+
+    snapshot = snapshot_target(target, paths["snapshots"], 1, "keep")
+    state = {
+        "target": str(target),
+        "direction": args.direction,
+        "verify_command": args.verify_command,
+        "guard_command": args.guard_command or "",
+        "metric_regex": args.metric_regex or "",
+        "cwd": args.cwd or "",
+        "timeout": args.timeout,
+        "best_score": score,
+        "best_size": target.stat().st_size,
+        "best_snapshot": str(snapshot),
+        "best_experiment": 1,
+        "last_experiment": 1,
+        "created_at": datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+        "mode": "mechanical-no-headless",
+    }
+    save_state(output_dir, state)
+    append_results(output_dir, {
+        "experiment": "001",
+        "score": format_score(score),
+        "best_score": format_score(score),
+        "status": "keep",
+        "description": args.description or "baseline",
+        "timestamp": datetime.now().isoformat(),
+        "direction": args.direction,
+        "verify_command": args.verify_command,
+        "guard_command": args.guard_command or "",
+        "snapshot": str(snapshot),
+    })
+    print(f"Baseline recorded: {format_score(score)} ({args.direction} is better)")
+    print(f"Snapshot: {snapshot}")
+    return 0
+
+
+def cmd_score(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir).resolve()
+    paths = make_dirs(output_dir)
+    state = load_state(output_dir)
+    target = ensure_target_allowed(Path(args.target or state["target"]), Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve())
+
+    experiment = int(state.get("last_experiment", 1)) + 1
+    direction = args.direction or state["direction"]
+    verify_command = args.verify_command or state["verify_command"]
+    guard_command = args.guard_command if args.guard_command is not None else state.get("guard_command", "")
+    metric_regex = args.metric_regex if args.metric_regex is not None else state.get("metric_regex", "")
+    metric_regex = metric_regex or None
+    args.cwd = args.cwd if args.cwd is not None else (state.get("cwd") or None)
+    args.timeout = args.timeout if args.timeout != 120 else int(state.get("timeout", args.timeout))
+
+    verify_result, score, verify_error = run_verify(args, verify_command, metric_regex)
+    command_output_file(output_dir, experiment, "verify", verify_result)
+
+    status = "discard"
+    reason = args.description or f"experiment {experiment:03d}"
+    guard_result: CommandResult | None = None
+    candidate_snapshot_status = "discard"
+
+    if verify_error:
+        status = "crash"
+        reason = f"{reason} — verify failed: {verify_error}"
+        candidate_snapshot_status = "crash"
+    else:
+        guard_result, guard_error = run_guard(args, guard_command)
+        command_output_file(output_dir, experiment, "guard", guard_result)
+        if guard_error:
+            status = "crash"
+            reason = f"{reason} — guard failed: {guard_error}"
+            candidate_snapshot_status = "crash"
+        else:
+            best_score = float(state["best_score"])
+            current_size = target.stat().st_size
+            best_size = int(state.get("best_size", current_size))
+            if is_improvement(float(score), best_score, direction):
+                status = "keep"
+                candidate_snapshot_status = "keep"
+            elif is_tie(float(score), best_score) and current_size < best_size:
+                status = "keep"
+                candidate_snapshot_status = "keep"
+                reason = f"{reason} — tie on score, simpler target"
             else:
                 status = "discard"
-                revert_target(args.target, backup_path)
-                save_snapshot(args.target, str(snapshots_dir), experiment_num, "discard")
+                candidate_snapshot_status = "discard"
 
-            entry = {
-                "experiment": f"{experiment_num:03d}",
-                "score": score,
-                "max_score": max_score,
-                "status": status,
-                "description": description,
-                "timestamp": datetime.now().isoformat(),
-            }
-            results_history.append(entry)
-            append_results_tsv(results_file, entry)
-            print_result(entry, best_score)
+    snapshot = snapshot_target(target, paths["snapshots"], experiment, candidate_snapshot_status)
 
-            # Save detailed eval results
-            eval_output_path = exp_runs_dir / "eval_results.json"
-            with open(eval_output_path, "w", encoding="utf-8") as f:
-                json.dump(eval_results, f, indent=2)
+    if status == "keep" and score is not None:
+        state.update({
+            "best_score": score,
+            "best_size": target.stat().st_size,
+            "best_snapshot": str(snapshot),
+            "best_experiment": experiment,
+        })
+    else:
+        revert_to_snapshot(target, state["best_snapshot"])
 
-            if status == "crash":
-                consecutive_failures += 1
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                    print(f"\nFATAL: {MAX_CONSECUTIVE_FAILURES} consecutive crashed experiments. Stopping.")
-                    break
-            else:
-                consecutive_failures = 0
+    state.update({
+        "last_experiment": experiment,
+        "updated_at": datetime.now().isoformat(),
+        "target": str(target),
+        "direction": direction,
+        "verify_command": verify_command,
+        "guard_command": guard_command or "",
+        "metric_regex": metric_regex or "",
+        "cwd": args.cwd or "",
+        "timeout": args.timeout,
+    })
+    save_state(output_dir, state)
 
-    except KeyboardInterrupt:
-        print(f"\n\n{'='*60}")
-        print(f"  AUTORESEARCH STOPPED BY USER")
-        print(f"  Total experiments: {experiment_num}")
-        print(f"  Best score: {best_score}/{max_score}")
-        print(f"  Results: {results_file}")
-        print(f"{'='*60}\n")
+    append_results(output_dir, {
+        "experiment": f"{experiment:03d}",
+        "score": format_score(score),
+        "best_score": format_score(float(state["best_score"])),
+        "status": status,
+        "description": reason,
+        "timestamp": datetime.now().isoformat(),
+        "direction": direction,
+        "verify_command": verify_command,
+        "guard_command": guard_command or "",
+        "snapshot": str(snapshot),
+    })
 
-    # Final summary
-    print(f"\n📊 Final Summary:")
-    print(f"   Experiments run: {len(results_history)}")
-    print(f"   Best score: {best_score}/{max_score}")
-    keeps = sum(1 for r in results_history if r["status"] == "keep")
-    discards = sum(1 for r in results_history if r["status"] == "discard")
-    crashes = sum(1 for r in results_history if r["status"] == "crash")
-    print(f"   Kept: {keeps} | Discarded: {discards} | Crashed: {crashes}")
-    print(f"   Results log: {results_file}")
-    print(f"   Snapshots: {snapshots_dir}")
+    print(f"Experiment {experiment:03d}: {status.upper()}")
+    print(f"Score: {format_score(score)} | Best: {format_score(float(state['best_score']))} | Direction: {direction}")
+    print(f"Snapshot: {snapshot}")
+    if status != "keep":
+        print(f"Reverted target to best snapshot: {state['best_snapshot']}")
+    return 0 if status != "crash" else 1
+
+
+def cmd_run_verify(args: argparse.Namespace) -> int:
+    verify_result, score, verify_error = run_verify(args, args.verify_command, args.metric_regex)
+    print(f"Verify exit: {verify_result.returncode}")
+    if verify_error:
+        print(f"Metric: INVALID ({verify_error})")
+        print(verify_result.combined_output[-1000:])
+        return 1
+    print(f"Metric: {format_score(score)}")
+    if args.guard_command:
+        guard_result, guard_error = run_guard(args, args.guard_command)
+        print(f"Guard exit: {guard_result.returncode if guard_result else 'skipped'}")
+        if guard_error:
+            print(guard_result.combined_output[-1000:] if guard_result else "")
+            return 1
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir).resolve()
+    state = load_state(output_dir)
+    print(f"Target: {state['target']}")
+    print(f"Mode: {state.get('mode', 'unknown')}")
+    print(f"Best: {format_score(float(state['best_score']))} ({state['direction']} is better), experiment {state['best_experiment']:03d}")
+    print(f"Best snapshot: {state['best_snapshot']}")
+    path = results_path(output_dir)
+    if path.exists():
+        rows = path.read_text().splitlines()[-6:]
+        print("\nRecent results:")
+        print("\n".join(rows))
+    return 0
+
+
+def add_common(
+    parser: argparse.ArgumentParser,
+    require_verify: bool = False,
+    require_target: bool = False,
+    require_direction: bool = False,
+) -> None:
+    parser.add_argument("--target", required=require_target, help="Path to the file the active harness is optimizing")
+    parser.add_argument("--output-dir", default="./autoresearch-results/", help="Directory for state, snapshots, runs, and results.tsv")
+    parser.add_argument("--verify-command", required=require_verify, help="Command that prints/exposes the numeric metric")
+    parser.add_argument("--metric-regex", default=None, help="Regex for extracting the metric. First capture group is used when present; otherwise the whole match is parsed.")
+    parser.add_argument("--direction", choices=("higher", "lower"), required=require_direction, help="Whether higher or lower metric values are better")
+    parser.add_argument("--guard-command", default=None, help="Optional command that must exit 0 for a change to be kept")
+    parser.add_argument("--cwd", default=None, help="Working directory for verify and guard commands")
+    parser.add_argument("--timeout", type=int, default=120, help="Timeout in seconds for verify and guard commands")
+    parser.add_argument("--allowed-root", default=None, help="Restrict target paths to this root (default: current working directory)")
+    parser.add_argument("--description", default="", help="Short description of this baseline or candidate change")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="No-headless autoresearch state manager")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    baseline = subparsers.add_parser("baseline", help="Run verify/guard once and establish the baseline")
+    add_common(baseline, require_verify=True, require_target=True, require_direction=True)
+    baseline.add_argument("--force", action="store_true", help="Replace an existing state.json baseline")
+    baseline.set_defaults(func=cmd_baseline)
+
+    score = subparsers.add_parser("score", help="Score the active harness's current candidate and keep/discard it")
+    add_common(score, require_verify=False)
+    score.set_defaults(func=cmd_score)
+
+    run_verify_parser = subparsers.add_parser("run-verify", help="Dry-run a verify command and optional guard")
+    add_common(run_verify_parser, require_verify=True)
+    run_verify_parser.set_defaults(func=cmd_run_verify)
+
+    status = subparsers.add_parser("status", help="Show current autoresearch state")
+    status.add_argument("--output-dir", default="./autoresearch-results/")
+    status.set_defaults(func=cmd_status)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
