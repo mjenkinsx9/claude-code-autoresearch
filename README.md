@@ -195,6 +195,7 @@ python scripts/generate_dashboard.py \
 ```text
 autoresearch-agent/
 ├── README.md
+├── AGENTS.md
 ├── SKILL.md
 ├── examples/
 │   ├── code-optimization.json
