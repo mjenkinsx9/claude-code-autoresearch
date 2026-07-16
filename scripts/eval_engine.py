@@ -41,6 +41,19 @@ def load_eval_config(config_path: str) -> dict[str, Any]:
     for key in ("criteria", "test_prompts"):
         if key not in config:
             raise SystemExit(f"Error: eval config missing required key {key!r}")
+    criteria = config["criteria"]
+    if not isinstance(criteria, list):
+        raise SystemExit("Error: eval config 'criteria' must be a list")
+    if len(criteria) == 0:
+        # Empty criteria yields 0/0 (100% or 0%) and is never a valid binary eval.
+        raise SystemExit("Error: eval config 'criteria' must contain at least one criterion")
+    for i, criterion in enumerate(criteria):
+        if not isinstance(criterion, dict):
+            raise SystemExit(f"Error: criteria[{i}] must be an object")
+        if not str(criterion.get("question", "")).strip():
+            raise SystemExit(f"Error: criteria[{i}] missing non-empty 'question'")
+    if not isinstance(config["test_prompts"], list) or len(config["test_prompts"]) == 0:
+        raise SystemExit("Error: eval config 'test_prompts' must be a non-empty list")
     return config
 
 

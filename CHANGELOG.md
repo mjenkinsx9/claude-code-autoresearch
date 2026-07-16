@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs (README, SKILL, protocol, program-template, security-workflow, tests.md) aligned with budgets, seal, multi-target, and stop rules.
 
 ### Fixed
+- `eval_engine` rejects empty `criteria` / `test_prompts` and criteria missing `question`, so harnesses cannot record vacuous `0/0` scores from a broken config.
 - `results --last 0` returns no rows (was treated as unlimited); negative `--last` is rejected. Avoids Python’s `seq[-0:]` full-slice trap.
 - Dashboard chart path starts at the first numeric decision score (not index 0), so leading `fork`/blank-score rows no longer skip `moveTo` and break the trajectory line.
 - `fork` experiment ids use microsecond stamps (+ counter) so multiple forks in the same second no longer share one `fork-…` id in `results.tsv`.

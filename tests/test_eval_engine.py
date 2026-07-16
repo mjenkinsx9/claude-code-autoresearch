@@ -153,6 +153,44 @@ class EvalEngineIntegrityTests(unittest.TestCase):
         body = prompt[start:end]
         self.assertNotIn("</UNTRUSTED_OUTPUT>", body)
 
+    def test_empty_criteria_config_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            cfg = work / "eval.json"
+            cfg.write_text(
+                json.dumps({"criteria": [], "test_prompts": ["p1"]}),
+                encoding="utf-8",
+            )
+            out = work / "out"
+            out.mkdir()
+            (out / "a.txt").write_text("x", encoding="utf-8")
+            result = run(
+                [PYTHON, str(EVAL), "--eval-config", str(cfg), "--output-dir", str(out), "--emit-prompt"],
+                work,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("at least one criterion", result.stderr + result.stdout)
+
+    def test_criterion_without_question_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            cfg = work / "eval.json"
+            cfg.write_text(
+                json.dumps({"criteria": [{"id": 1}], "test_prompts": ["p1"]}),
+                encoding="utf-8",
+            )
+            out = work / "out"
+            out.mkdir()
+            (out / "a.txt").write_text("x", encoding="utf-8")
+            result = run(
+                [PYTHON, str(EVAL), "--eval-config", str(cfg), "--output-dir", str(out), "--emit-prompt"],
+                work,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("question", (result.stderr + result.stdout).lower())
+
 
 if __name__ == "__main__":
     unittest.main()
