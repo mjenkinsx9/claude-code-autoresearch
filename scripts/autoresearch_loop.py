@@ -1209,6 +1209,49 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+RESULTS_JSON_FLOAT_FIELDS = (
+    "score",
+    "max_score",
+    "best_score",
+    "private_score",
+    "decision_score",
+)
+RESULTS_JSON_INT_FIELDS = (
+    "experiment",
+    "parent_experiment",
+)
+
+
+def coerce_results_json_row(row: dict[str, str]) -> dict[str, Any]:
+    """Coerce TSV string cells to numbers/null for ``results --json`` consumers.
+
+    Blank score cells become ``null``. Whole floats become ``int``. Unparseable
+    values stay as the original string so agents can still inspect them.
+    Experiment ids become integers (``001`` → ``1``) to match ``status --json``.
+    """
+    out: dict[str, Any] = dict(row)
+    for key in RESULTS_JSON_FLOAT_FIELDS:
+        raw = str(out.get(key, "") or "").strip()
+        if raw == "":
+            out[key] = None
+            continue
+        try:
+            val = float(raw)
+            out[key] = int(val) if val.is_integer() else val
+        except ValueError:
+            pass
+    for key in RESULTS_JSON_INT_FIELDS:
+        raw = str(out.get(key, "") or "").strip()
+        if raw == "":
+            out[key] = None
+            continue
+        try:
+            out[key] = int(raw)
+        except ValueError:
+            pass
+    return out
+
+
 def cmd_results(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).resolve()
     path = results_path(output_dir)
@@ -1220,7 +1263,7 @@ def cmd_results(args: argparse.Namespace) -> int:
     if last_n:
         rows = rows[-int(last_n) :]
     if getattr(args, "json", False):
-        print(json.dumps(rows, indent=2))
+        print(json.dumps([coerce_results_json_row(r) for r in rows], indent=2))
     else:
         for row in rows:
             print("\t".join(str(row.get(h, "")) for h in RESULTS_HEADER))

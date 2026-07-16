@@ -46,3 +46,4 @@ Notes:
 - After `discard`/`crash`, the helper sets the next parent to **best_experiment**, not the failed id.
 - Snapshots live under `autoresearch-results/snapshots/experiment_NNN_status/` with `manifest.json` + `files/`.
 - Do not commit `autoresearch-results/`.
+- `results --json` coerces score columns and experiment ids to numbers (`null` when blank) so harness parsers do not need string→float conversion. Plain `results` (TSV text) keeps zero-padded string ids.

@@ -205,6 +205,16 @@ class BudgetsJsonTests(unittest.TestCase):
             rows = json.loads(results.stdout)
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["status"], "keep")
+            # Numeric coercion: scores/ids are numbers, blanks are null
+            self.assertEqual(rows[0]["experiment"], 1)
+            self.assertIsInstance(rows[0]["experiment"], int)
+            self.assertEqual(rows[0]["score"], 3)
+            self.assertIsInstance(rows[0]["score"], int)
+            self.assertEqual(rows[0]["best_score"], 3)
+            self.assertEqual(rows[0]["decision_score"], 3)
+            self.assertIsNone(rows[0]["private_score"])
+            self.assertIsNone(rows[0]["max_score"])
+            self.assertIsNone(rows[0]["parent_experiment"])
 
             best = run([
                 PYTHON, str(LOOP), "best", "--json",
