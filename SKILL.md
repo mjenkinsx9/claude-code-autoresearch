@@ -101,7 +101,7 @@ python scripts/autoresearch_loop.py baseline \
 
 Prefer `--metric NAME` so the helper extracts the last `NAME: value` line. Use `--metric-regex` for custom patterns.
 
-**Sealed fields** (mid-run change requires `--allow-config-change`): verify, private-verify, guard, metric, metric-regex, direction, cwd, targets.
+**Sealed fields** (mid-run change requires `--allow-config-change`): verify, private-verify, guard, metric, metric-regex, direction, cwd, targets, max-score.
 
 ## Core Loop Protocol
 
