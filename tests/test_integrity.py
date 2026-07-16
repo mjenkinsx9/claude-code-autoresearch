@@ -205,7 +205,7 @@ class IntegrityLoopTests(unittest.TestCase):
                 "001\t3\t\t3\tkeep\tbaseline\t2026-07-16T00:00:00\thigher\t\t\tsnap\n",
                 encoding="utf-8",
             )
-            # Seed minimal state via real baseline in a sibling dir then copy? 
+            # Seed minimal state via real baseline in a sibling dir then copy?
             # Easier: run score path after baseline in work with pre-seeded stale TSV
             # Baseline refuses if state exists; score needs state. Create baseline first without TSV race:
             # Write state by running baseline in empty dir then replace TSV with stale and score.
