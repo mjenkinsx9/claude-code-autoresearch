@@ -23,6 +23,31 @@ def run(args, cwd: Path, check: bool = True):
 
 
 class BudgetsJsonTests(unittest.TestCase):
+    def test_negative_budget_limits_rejected_on_baseline(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
+                encoding="utf-8",
+            )
+            for flag, value in (("--max-experiments", "-1"), ("--max-wall-seconds", "-5")):
+                with self.subTest(flag=flag, value=value):
+                    blocked = run([
+                        PYTHON, str(LOOP), "baseline",
+                        "--target", str(target),
+                        "--verify-command", f"{PYTHON} score.py target.txt",
+                        "--metric", "Score",
+                        "--direction", "higher",
+                        flag, value,
+                    ], work, check=False)
+                    self.assertNotEqual(blocked.returncode, 0)
+                    msg = (blocked.stderr + blocked.stdout).lower()
+                    self.assertIn("must be >= 0", msg)
+                    self.assertNotIn("traceback", msg)
+
     def test_max_wall_seconds_allows_score_within_budget(self):
         """Multi-hour wall budget must not false-expire due to timezone skew."""
         with tempfile.TemporaryDirectory() as td:

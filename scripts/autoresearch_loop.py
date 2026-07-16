@@ -746,6 +746,31 @@ def _targets_override_requested(args: argparse.Namespace, state: dict[str, Any],
     return cli_targets, changed
 
 
+def validate_budget_limits(
+    max_experiments: Any = None,
+    max_wall_seconds: Any = None,
+) -> None:
+    """Reject negative budget caps (0 means unlimited; omit means unlimited)."""
+    if max_experiments not in (None, ""):
+        try:
+            exp_i = int(max_experiments)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                f"ERROR: --max-experiments must be an integer >= 0, got {max_experiments!r}"
+            ) from exc
+        if exp_i < 0:
+            raise SystemExit(f"ERROR: --max-experiments must be >= 0, got {exp_i}")
+    if max_wall_seconds not in (None, ""):
+        try:
+            wall_f = float(max_wall_seconds)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                f"ERROR: --max-wall-seconds must be a number >= 0, got {max_wall_seconds!r}"
+            ) from exc
+        if wall_f < 0:
+            raise SystemExit(f"ERROR: --max-wall-seconds must be >= 0, got {wall_f}")
+
+
 def check_budget(state: dict[str, Any]) -> str | None:
     """Return error message if budget exhausted, else None.
 
@@ -754,6 +779,11 @@ def check_budget(state: dict[str, Any]) -> str | None:
     max_exp = state.get("max_experiments")
     if max_exp not in (None, "", 0, "0"):
         max_exp_i = int(max_exp)
+        if max_exp_i < 0:
+            return (
+                f"BUDGET_EXCEEDED: invalid max_experiments={max_exp_i} "
+                f"(must be >= 0; refuse score until baseline is re-run)"
+            )
         candidates_done = max(0, int(state.get("last_experiment", 1)) - 1)
         if candidates_done >= max_exp_i:
             return (
@@ -762,12 +792,24 @@ def check_budget(state: dict[str, Any]) -> str | None:
             )
     max_wall = state.get("max_wall_seconds")
     if max_wall not in (None, "", 0, "0"):
+        try:
+            wall_f = float(max_wall)
+        except (TypeError, ValueError):
+            return (
+                f"BUDGET_EXCEEDED: invalid max_wall_seconds={max_wall!r}; "
+                f"refuse score until baseline is re-run"
+            )
+        if wall_f < 0:
+            return (
+                f"BUDGET_EXCEEDED: invalid max_wall_seconds={wall_f} "
+                f"(must be >= 0; refuse score until baseline is re-run)"
+            )
         created = state.get("created_at")
         if created:
             try:
                 created_dt = parse_timestamp(str(created))
                 elapsed = (utc_now() - created_dt).total_seconds()
-                if elapsed > float(max_wall):
+                if elapsed > wall_f:
                     return (
                         f"BUDGET_EXCEEDED: max_wall_seconds={max_wall} elapsed={elapsed:.1f}s"
                     )
@@ -955,6 +997,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 
     max_experiments = getattr(args, "max_experiments", None)
     max_wall_seconds = getattr(args, "max_wall_seconds", None)
+    validate_budget_limits(max_experiments, max_wall_seconds)
     max_score = getattr(args, "max_score", None)
     lineage = getattr(args, "lineage", None) or ""
 
