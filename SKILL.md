@@ -93,10 +93,12 @@ Mechanical baseline command:
 python scripts/autoresearch_loop.py baseline \
   --target target.md \
   --verify-command './score.sh' \
-  --metric-regex 'Score: ([0-9.]+)' \
+  --metric Score \
   --direction higher \
   --guard-command 'npm test'
 ```
+
+Prefer `--metric NAME` so the helper extracts the last `NAME: value` line. Use `--metric-regex` for custom patterns. Changing sealed verify/guard/metric/direction on later `score` runs requires `--allow-config-change`.
 
 ## Core Loop Protocol
 
@@ -137,13 +139,14 @@ Dry-run a candidate verify command before using it:
 ```bash
 python scripts/autoresearch_loop.py run-verify \
   --verify-command './score.sh' \
-  --metric-regex 'Score: ([0-9.]+)' \
+  --metric Score \
   --guard-command 'npm test'
 ```
 
 Metric requirements:
 
-- Outputs or exposes one parseable number
+- Outputs or exposes one parseable number (print the metric **last**; progress on stderr)
+- Prefer `--metric Name` or `--metric-regex` over the last-number fallback
 - Deterministic enough for keep/discard decisions
 - Fast enough to run every iteration
 - Has clear direction: `higher` or `lower`

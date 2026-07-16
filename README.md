@@ -71,10 +71,12 @@ cp -R autoresearch-agent/* ~/.hermes/skills/autoresearch/
 python scripts/autoresearch_loop.py baseline \
   --target target.md \
   --verify-command './score.sh' \
-  --metric-regex 'Score: ([0-9.]+)' \
+  --metric Score \
   --direction higher \
   --guard-command 'npm test'
 ```
+
+Prefer `--metric Score` (parses the last `Score: <number>` line) over a bare last-number fallback. Use `--metric-regex` when you need a custom pattern.
 
 2. Ask the active harness to run autoresearch:
 
@@ -83,7 +85,7 @@ python scripts/autoresearch_loop.py baseline \
 Goal: Improve target.md score.
 Target: target.md
 Verify: ./score.sh
-Metric regex: Score: ([0-9.]+)
+Metric: Score
 Direction: higher
 Guard: npm test
 Max experiments: 10
@@ -97,7 +99,7 @@ python scripts/autoresearch_loop.py score \
   --description 'short description of the one change'
 ```
 
-The helper keeps improvements, reverts regressions to the best snapshot, and appends `autoresearch-results/results.tsv`.
+The helper keeps improvements, reverts regressions to the best snapshot, and appends `autoresearch-results/results.tsv`. Mid-run changes to verify/guard/metric/direction require `--allow-config-change`.
 
 ---
 

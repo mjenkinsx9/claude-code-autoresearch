@@ -19,6 +19,7 @@ Typical flow:
     python scripts/autoresearch_loop.py baseline \
       --target target.md \
       --verify-command './score.sh' \
+      --metric Score \
       --direction higher
 
     # active agent makes exactly one change to target.md
@@ -32,16 +33,20 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+DEFAULT_TIMEOUT = 120
 
 RESULTS_HEADER = [
     "experiment",
@@ -74,27 +79,67 @@ class CommandResult:
         return "\n".join(part for part in (self.stdout, self.stderr) if part)
 
 
-def run_shell_command(command: str, cwd: str | None = None, timeout: int = 120) -> CommandResult:
+def run_shell_command(command: str, cwd: str | None = None, timeout: int | None = None) -> CommandResult:
     """Run a user-supplied verification or guard command."""
+    if timeout is None:
+        timeout = DEFAULT_TIMEOUT
+    # start_new_session enables process-group kill on timeout (POSIX).
+    kwargs: dict[str, Any] = {
+        "args": command,
+        "shell": True,
+        "cwd": cwd,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
+
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return CommandResult(command, result.returncode, result.stdout or "", result.stderr or "")
-    except subprocess.TimeoutExpired as exc:
+        process = subprocess.Popen(**kwargs)
+    except OSError as exc:
+        return CommandResult(command, 127, "", str(exc))
+
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return CommandResult(command, process.returncode, stdout or "", stderr or "")
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(process)
+        try:
+            stdout, stderr = process.communicate(timeout=1)
+        except (subprocess.TimeoutExpired, ValueError, OSError):
+            stdout, stderr = "", ""
         return CommandResult(
             command,
             124,
-            exc.stdout or "",
-            f"command timed out after {timeout}s",
+            stdout or "",
+            (stderr or "") + ("" if not stderr else "\n") + f"command timed out after {timeout}s",
         )
-    except OSError as exc:
-        return CommandResult(command, 127, "", str(exc))
+
+
+def _kill_process_tree(process: subprocess.Popen[str]) -> None:
+    """Best-effort kill of the process and its children."""
+    try:
+        if os.name != "nt" and process.pid:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                process.kill()
+        else:
+            process.kill()
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        process.wait(timeout=1)
+    except (subprocess.TimeoutExpired, ProcessLookupError, OSError):
+        try:
+            if os.name != "nt" and process.pid:
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
 
 def ensure_target_allowed(target: Path, allowed_root: Path) -> Path:
@@ -140,12 +185,17 @@ def load_state(output_dir: Path) -> dict[str, Any]:
             f"ERROR: no autoresearch state found at {path}. "
             "Run the 'baseline' command first."
         )
-    return json.loads(path.read_text())
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"ERROR: corrupt state.json at {path}: {exc}") from exc
 
 
 def save_state(output_dir: Path, state: dict[str, Any]) -> None:
     path = state_path(output_dir)
-    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def sanitize_tsv_field(value: Any) -> str:
@@ -156,20 +206,53 @@ def sanitize_tsv_field(value: Any) -> str:
 def append_results(output_dir: Path, row: dict[str, Any]) -> None:
     path = results_path(output_dir)
     exists = path.exists()
-    with path.open("a", newline="") as fh:
+    with path.open("a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=RESULTS_HEADER, delimiter="\t", extrasaction="ignore")
         if not exists:
             writer.writeheader()
         writer.writerow({key: sanitize_tsv_field(row.get(key, "")) for key in RESULTS_HEADER})
 
 
-def metric_from_output(output: str, metric_regex: str | None = None) -> float:
-    """Extract a numeric metric from command output."""
+def resolve_metric_spec(
+    metric_regex: str | None = None,
+    metric_name: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Return (regex, name) used for extraction. Regex wins over name."""
     if metric_regex:
-        match = re.search(metric_regex, output, re.MULTILINE | re.DOTALL)
-        if not match:
-            raise ValueError(f"metric regex did not match: {metric_regex!r}")
+        return metric_regex, None
+    if metric_name:
+        return None, metric_name
+    return None, None
+
+
+def metric_from_output(
+    output: str,
+    metric_regex: str | None = None,
+    metric_name: str | None = None,
+) -> float:
+    """Extract a numeric metric from command output.
+
+    Preference order:
+    1. ``metric_regex`` (first capture group when present; last match if multiple)
+    2. ``metric_name`` (case-insensitive ``name: value`` / ``name = value``; last match)
+    3. Last number in the combined output (legacy fallback)
+    """
+    regex, name = resolve_metric_spec(metric_regex=metric_regex, metric_name=metric_name)
+    if regex:
+        matches = list(re.finditer(regex, output, re.MULTILINE | re.DOTALL))
+        if not matches:
+            raise ValueError(f"metric regex did not match: {regex!r}")
+        match = matches[-1]
         raw = match.group(1) if match.groups() else match.group(0)
+    elif name:
+        pattern = (
+            rf"(?im)(?:^|\b){re.escape(name)}\s*[:=]\s*"
+            rf"([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)"
+        )
+        matches = list(re.finditer(pattern, output))
+        if not matches:
+            raise ValueError(f"metric name {name!r} not found in verify output")
+        raw = matches[-1].group(1)
     else:
         numbers = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", output)
         if not numbers:
@@ -201,6 +284,12 @@ def is_tie(score: float, best_score: float) -> bool:
     return score == best_score
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def snapshot_target(target: Path, snapshots_dir: Path, experiment: int, status: str) -> Path:
     suffix = target.suffix or ".txt"
     destination = snapshots_dir / f"experiment_{experiment:03d}_{status}{suffix}"
@@ -208,16 +297,64 @@ def snapshot_target(target: Path, snapshots_dir: Path, experiment: int, status: 
     return destination
 
 
-def revert_to_snapshot(target: Path, snapshot: str) -> None:
-    shutil.copy2(snapshot, target)
+def ensure_snapshot_allowed(snapshot: Path, snapshots_dir: Path) -> Path:
+    snapshot = snapshot.resolve()
+    snapshots_dir = snapshots_dir.resolve()
+    try:
+        snapshot.relative_to(snapshots_dir)
+    except ValueError:
+        raise SystemExit(
+            f"ERROR: best_snapshot {snapshot} is not under snapshots dir {snapshots_dir}. "
+            "Refusing to revert from a path outside the run sandbox."
+        )
+    if not snapshot.exists():
+        raise SystemExit(f"ERROR: best_snapshot {snapshot} does not exist.")
+    if not snapshot.is_file():
+        raise SystemExit(f"ERROR: best_snapshot {snapshot} is not a file.")
+    return snapshot
 
 
-def run_verify(args: argparse.Namespace, verify_command: str, metric_regex: str | None) -> tuple[CommandResult, float | None, str | None]:
+def revert_to_snapshot(
+    target: Path,
+    snapshot: str,
+    snapshots_dir: Path,
+    *,
+    expected_sha256: str | None = None,
+    strict_snapshots: bool = False,
+) -> None:
+    snap_path = ensure_snapshot_allowed(Path(snapshot), snapshots_dir)
+    if expected_sha256:
+        actual = file_sha256(snap_path)
+        if actual != expected_sha256:
+            msg = (
+                f"snapshot hash mismatch for {snap_path}: "
+                f"expected {expected_sha256}, got {actual}"
+            )
+            if strict_snapshots:
+                raise SystemExit(f"ERROR: {msg}")
+            print(f"WARNING: {msg}", file=sys.stderr)
+    shutil.copy2(snap_path, target)
+
+
+def resolve_timeout(args: argparse.Namespace, state: dict[str, Any] | None = None) -> int:
+    if getattr(args, "timeout", None) is not None:
+        return int(args.timeout)
+    if state is not None and state.get("timeout") is not None:
+        return int(state["timeout"])
+    return DEFAULT_TIMEOUT
+
+
+def run_verify(
+    args: argparse.Namespace,
+    verify_command: str,
+    metric_regex: str | None,
+    metric_name: str | None = None,
+) -> tuple[CommandResult, float | None, str | None]:
     result = run_shell_command(verify_command, cwd=args.cwd, timeout=args.timeout)
     if not result.ok:
         return result, None, f"verify command exited {result.returncode}"
     try:
-        score = metric_from_output(result.combined_output, metric_regex)
+        score = metric_from_output(result.combined_output, metric_regex=metric_regex, metric_name=metric_name)
         return result, score, None
     except ValueError as exc:
         return result, None, str(exc)
@@ -242,20 +379,50 @@ def command_output_file(output_dir: Path, experiment: int, name: str, result: Co
         f"$ {result.command}\n"
         f"exit={result.returncode}\n\n"
         f"--- stdout ---\n{result.stdout}\n\n"
-        f"--- stderr ---\n{result.stderr}\n"
+        f"--- stderr ---\n{result.stderr}\n",
+        encoding="utf-8",
     )
+
+
+def _cli_config_overrides(args: argparse.Namespace, state: dict[str, Any]) -> list[str]:
+    """Return human-readable list of sealed fields the CLI is trying to change."""
+    changes: list[str] = []
+    if args.verify_command is not None and args.verify_command != state.get("verify_command"):
+        changes.append("verify_command")
+    if args.direction is not None and args.direction != state.get("direction"):
+        changes.append("direction")
+    if args.metric_regex is not None and (args.metric_regex or "") != (state.get("metric_regex") or ""):
+        changes.append("metric_regex")
+    if getattr(args, "metric", None) is not None and (args.metric or "") != (state.get("metric") or ""):
+        changes.append("metric")
+    if args.guard_command is not None and (args.guard_command or "") != (state.get("guard_command") or ""):
+        changes.append("guard_command")
+    return changes
 
 
 def cmd_baseline(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).resolve()
     paths = make_dirs(output_dir)
-    target = ensure_target_allowed(Path(args.target), Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve())
+    target = ensure_target_allowed(
+        Path(args.target),
+        Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve(),
+    )
     args.cwd = args.cwd or str(Path.cwd())
+    args.timeout = resolve_timeout(args)
 
     if state_path(output_dir).exists() and not args.force:
         raise SystemExit(f"ERROR: {state_path(output_dir)} already exists. Pass --force to replace the baseline.")
 
-    verify_result, score, verify_error = run_verify(args, args.verify_command, args.metric_regex)
+    metric_name = args.metric or None
+    metric_regex = args.metric_regex or None
+    if not metric_name and not metric_regex:
+        print(
+            "WARNING: no --metric or --metric-regex set; using last-number fallback. "
+            "Prefer --metric Score (or similar) so progress logs cannot steal the metric.",
+            file=sys.stderr,
+        )
+
+    verify_result, score, verify_error = run_verify(args, args.verify_command, metric_regex, metric_name)
     command_output_file(output_dir, 1, "verify", verify_result)
     if verify_error:
         print(f"ERROR: invalid baseline verify result: {verify_error}", file=sys.stderr)
@@ -276,12 +443,14 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         "direction": args.direction,
         "verify_command": args.verify_command,
         "guard_command": args.guard_command or "",
-        "metric_regex": args.metric_regex or "",
+        "metric": metric_name or "",
+        "metric_regex": metric_regex or "",
         "cwd": args.cwd or "",
         "timeout": args.timeout,
         "best_score": score,
         "best_size": target.stat().st_size,
         "best_snapshot": str(snapshot),
+        "best_snapshot_sha256": file_sha256(snapshot),
         "best_experiment": 1,
         "last_experiment": 1,
         "created_at": datetime.now().isoformat(),
@@ -310,18 +479,31 @@ def cmd_score(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).resolve()
     paths = make_dirs(output_dir)
     state = load_state(output_dir)
-    target = ensure_target_allowed(Path(args.target or state["target"]), Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve())
+    target = ensure_target_allowed(
+        Path(args.target or state["target"]),
+        Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve(),
+    )
+
+    overrides = _cli_config_overrides(args, state)
+    if overrides and not getattr(args, "allow_config_change", False):
+        raise SystemExit(
+            "ERROR: sealed config change refused for: "
+            + ", ".join(overrides)
+            + ". Re-run with --allow-config-change if intentional."
+        )
 
     experiment = int(state.get("last_experiment", 1)) + 1
-    direction = args.direction or state["direction"]
-    verify_command = args.verify_command or state["verify_command"]
+    direction = args.direction if args.direction is not None else state["direction"]
+    verify_command = args.verify_command if args.verify_command is not None else state["verify_command"]
     guard_command = args.guard_command if args.guard_command is not None else state.get("guard_command", "")
     metric_regex = args.metric_regex if args.metric_regex is not None else state.get("metric_regex", "")
     metric_regex = metric_regex or None
+    metric_name = args.metric if getattr(args, "metric", None) is not None else state.get("metric", "")
+    metric_name = metric_name or None
     args.cwd = args.cwd if args.cwd is not None else (state.get("cwd") or None)
-    args.timeout = args.timeout if args.timeout != 120 else int(state.get("timeout", args.timeout))
+    args.timeout = resolve_timeout(args, state)
 
-    verify_result, score, verify_error = run_verify(args, verify_command, metric_regex)
+    verify_result, score, verify_error = run_verify(args, verify_command, metric_regex, metric_name)
     command_output_file(output_dir, experiment, "verify", verify_result)
 
     status = "discard"
@@ -362,10 +544,22 @@ def cmd_score(args: argparse.Namespace) -> int:
             "best_score": score,
             "best_size": target.stat().st_size,
             "best_snapshot": str(snapshot),
+            "best_snapshot_sha256": file_sha256(snapshot),
             "best_experiment": experiment,
         })
     else:
-        revert_to_snapshot(target, state["best_snapshot"])
+        try:
+            revert_to_snapshot(
+                target,
+                state["best_snapshot"],
+                paths["snapshots"],
+                expected_sha256=state.get("best_snapshot_sha256") or None,
+                strict_snapshots=bool(getattr(args, "strict_snapshots", False)),
+            )
+        except SystemExit:
+            raise
+        except OSError as exc:
+            raise SystemExit(f"ERROR: failed to revert target to best snapshot: {exc}") from exc
 
     state.update({
         "last_experiment": experiment,
@@ -374,6 +568,7 @@ def cmd_score(args: argparse.Namespace) -> int:
         "direction": direction,
         "verify_command": verify_command,
         "guard_command": guard_command or "",
+        "metric": metric_name or "",
         "metric_regex": metric_regex or "",
         "cwd": args.cwd or "",
         "timeout": args.timeout,
@@ -402,7 +597,10 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 
 def cmd_run_verify(args: argparse.Namespace) -> int:
-    verify_result, score, verify_error = run_verify(args, args.verify_command, args.metric_regex)
+    args.timeout = resolve_timeout(args)
+    metric_name = getattr(args, "metric", None) or None
+    metric_regex = args.metric_regex or None
+    verify_result, score, verify_error = run_verify(args, args.verify_command, metric_regex, metric_name)
     print(f"Verify exit: {verify_result.returncode}")
     if verify_error:
         print(f"Metric: INVALID ({verify_error})")
@@ -425,9 +623,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"Mode: {state.get('mode', 'unknown')}")
     print(f"Best: {format_score(float(state['best_score']))} ({state['direction']} is better), experiment {state['best_experiment']:03d}")
     print(f"Best snapshot: {state['best_snapshot']}")
+    if state.get("metric"):
+        print(f"Metric name: {state['metric']}")
     path = results_path(output_dir)
     if path.exists():
-        rows = path.read_text().splitlines()[-6:]
+        rows = path.read_text(encoding="utf-8").splitlines()[-6:]
         print("\nRecent results:")
         print("\n".join(rows))
     return 0
@@ -441,12 +641,26 @@ def add_common(
 ) -> None:
     parser.add_argument("--target", required=require_target, help="Path to the file the active harness is optimizing")
     parser.add_argument("--output-dir", default="./autoresearch-results/", help="Directory for state, snapshots, runs, and results.tsv")
-    parser.add_argument("--verify-command", required=require_verify, help="Command that prints/exposes the numeric metric")
-    parser.add_argument("--metric-regex", default=None, help="Regex for extracting the metric. First capture group is used when present; otherwise the whole match is parsed.")
-    parser.add_argument("--direction", choices=("higher", "lower"), required=require_direction, help="Whether higher or lower metric values are better")
+    parser.add_argument("--verify-command", required=require_verify, default=None, help="Command that prints/exposes the numeric metric")
+    parser.add_argument(
+        "--metric",
+        default=None,
+        help="Metric name to extract (e.g. Score, accuracy). Matches 'name: value' / 'name = value'; last match wins.",
+    )
+    parser.add_argument(
+        "--metric-regex",
+        default=None,
+        help="Regex for extracting the metric (overrides --metric). Last match wins; first capture group is used when present.",
+    )
+    parser.add_argument("--direction", choices=("higher", "lower"), required=require_direction, default=None, help="Whether higher or lower metric values are better")
     parser.add_argument("--guard-command", default=None, help="Optional command that must exit 0 for a change to be kept")
     parser.add_argument("--cwd", default=None, help="Working directory for verify and guard commands")
-    parser.add_argument("--timeout", type=int, default=120, help="Timeout in seconds for verify and guard commands")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help=f"Timeout in seconds for verify and guard commands (default: inherit from state or {DEFAULT_TIMEOUT})",
+    )
     parser.add_argument("--allowed-root", default=None, help="Restrict target paths to this root (default: current working directory)")
     parser.add_argument("--description", default="", help="Short description of this baseline or candidate change")
 
@@ -462,6 +676,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     score = subparsers.add_parser("score", help="Score the active harness's current candidate and keep/discard it")
     add_common(score, require_verify=False)
+    score.add_argument(
+        "--allow-config-change",
+        action="store_true",
+        help="Allow changing sealed verify/guard/metric/direction settings mid-run",
+    )
+    score.add_argument(
+        "--strict-snapshots",
+        action="store_true",
+        help="Hard-fail if best snapshot content hash does not match state",
+    )
     score.set_defaults(func=cmd_score)
 
     run_verify_parser = subparsers.add_parser("run-verify", help="Dry-run a verify command and optional guard")
