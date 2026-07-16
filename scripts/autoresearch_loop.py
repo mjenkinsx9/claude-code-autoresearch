@@ -831,11 +831,13 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     args.cwd = args.cwd or str(Path.cwd())
     args.timeout = resolve_timeout(args)
 
-    if state_path(output_dir).exists() and not args.force:
+    state_exists = state_path(output_dir).exists()
+    if state_exists and not args.force:
         raise SystemExit(f"ERROR: {state_path(output_dir)} already exists. Pass --force to replace the baseline.")
 
-    if args.force:
-        # Replace research log so experiment ids restart cleanly (no duplicate 001 rows).
+    # Rotate any prior results.tsv so experiment ids restart without duplicate 001 rows.
+    # Covers --force restarts and orphan logs (results.tsv without state.json).
+    if args.force or (not state_exists and results_path(output_dir).exists()):
         rotated = rotate_results_tsv(output_dir)
         if rotated is not None:
             print(f"Rotated previous results to {rotated}", file=sys.stderr)

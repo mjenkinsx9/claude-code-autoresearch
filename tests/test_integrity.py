@@ -285,6 +285,39 @@ class IntegrityLoopTests(unittest.TestCase):
             self.assertEqual(len(prev), 1)
             self.assertIn("002", prev[0].read_text(encoding="utf-8"))
 
+    def test_baseline_rotates_orphan_results_tsv_without_state(self):
+        """Fresh baseline must not append onto a leftover results.tsv when state.json is missing."""
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = self._setup_work(work)
+            out = work / "autoresearch-results"
+            out.mkdir(parents=True)
+            orphan = out / "results.tsv"
+            orphan.write_text(
+                "experiment\tscore\tmax_score\tbest_score\tprivate_score\tdecision_score\tstatus\t"
+                "description\ttimestamp\tdirection\tverify_command\tguard_command\t"
+                "snapshot\tparent_experiment\tlineage\n"
+                "001\t99\t\t99\t\t99\tkeep\torphan\t2026-07-16T00:00:00+00:00\thigher\t\t\t\t\t\n"
+                "002\t1\t\t99\t\t1\tdiscard\told\t2026-07-16T00:01:00+00:00\thigher\t\t\t\t001\t\n",
+                encoding="utf-8",
+            )
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+            ], work)
+            text = (out / "results.tsv").read_text(encoding="utf-8")
+            data_rows = [ln for ln in text.splitlines()[1:] if ln.strip()]
+            self.assertEqual(len(data_rows), 1)
+            self.assertIn("001", data_rows[0])
+            self.assertNotIn("002", text)
+            self.assertNotIn("orphan", text)
+            prev = list(out.glob("results.prev.*.tsv"))
+            self.assertEqual(len(prev), 1)
+            self.assertIn("orphan", prev[0].read_text(encoding="utf-8"))
+
     def test_force_baseline_never_clobbers_prior_rotated_tsv(self):
         """Second --force must not overwrite an existing results.prev archive."""
         with tempfile.TemporaryDirectory() as td:
