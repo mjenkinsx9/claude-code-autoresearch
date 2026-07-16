@@ -1170,14 +1170,36 @@ def cmd_best(args: argparse.Namespace) -> int:
 def cmd_fork(args: argparse.Namespace) -> int:
     """Record a fork from the current best without changing target files or sealed metric config."""
     output_dir = Path(args.output_dir).resolve()
+    make_dirs(output_dir)
     state = load_state(output_dir)
     best_exp = int(state.get("best_experiment", 1))
     lineage = args.lineage or state.get("lineage", "") or "fork"
+    desc = args.description or f"fork from best experiment {best_exp:03d}"
     state["next_parent_experiment"] = best_exp
     state["lineage"] = lineage
     state["updated_at"] = utc_now_iso()
     save_state(output_dir, state)
+    # Audit trail only — does not consume a candidate score slot
+    fork_id = f"fork-{utc_now().strftime('%Y%m%dT%H%M%S')}"
+    append_results(output_dir, {
+        "experiment": fork_id,
+        "score": "",
+        "max_score": "",
+        "best_score": format_score(float(state["best_score"])),
+        "private_score": "",
+        "decision_score": "",
+        "status": "fork",
+        "description": desc,
+        "timestamp": utc_now_iso(),
+        "direction": state.get("direction", ""),
+        "verify_command": state.get("verify_command", ""),
+        "guard_command": state.get("guard_command", ""),
+        "snapshot": state.get("best_snapshot", ""),
+        "parent_experiment": f"{best_exp:03d}",
+        "lineage": lineage,
+    })
     print(f"Fork ready: next parent={best_exp:03d} lineage={lineage}")
+    print(f"Logged: {fork_id} (status=fork; does not count toward max_experiments)")
     print("Sealed verify/metric/direction unchanged.")
     if args.description:
         print(f"Note: {args.description}")

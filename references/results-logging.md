@@ -20,7 +20,7 @@ experiment	score	max_score	best_score	private_score	decision_score	status	descri
 | best_score | number | Best known **decision** score after this row |
 | private_score | number | Private/held-out metric when configured; else blank |
 | decision_score | number | Metric used for keep/discard this row (private if set, else public) |
-| status | enum | `keep`, `discard`, or `crash` |
+| status | enum | `keep`, `discard`, `crash`, or `fork` (lineage marker; does not count toward `--max-experiments`) |
 | description | string | One-sentence description of what was tried |
 | timestamp | ISO datetime | When the row was written |
 | direction | enum | `higher` or `lower` |

@@ -83,6 +83,7 @@ def generate_html(results: list[dict[str, Any]], title: str) -> str:
     kept = sum(1 for r in results if r.get("status") == "keep")
     discarded = sum(1 for r in results if r.get("status") == "discard")
     crashed = sum(1 for r in results if r.get("status") == "crash")
+    forked = sum(1 for r in results if r.get("status") == "fork")
     best_score, direction = decision_best_score(results)
     uses_private = any(r.get("private_score_num") is not None for r in results)
 
@@ -147,6 +148,7 @@ th {{ color: #a5b4fc; }}
 .status.keep {{ background: #064e3b; color: #a7f3d0; }}
 .status.discard {{ background: #4c1d1d; color: #fecaca; }}
 .status.crash {{ background: #451a03; color: #fed7aa; }}
+.status.fork {{ background: #1e3a5f; color: #93c5fd; }}
 canvas {{ width: 100%; max-height: 320px; background: #0b0c18; border-radius: 8px; }}
 .note {{ color: #94a3b8; font-size: .9rem; }}
 </style>
@@ -159,6 +161,7 @@ canvas {{ width: 100%; max-height: 320px; background: #0b0c18; border-radius: 8p
   <div class="card"><div>Kept</div><div class="stat">{kept}</div></div>
   <div class="card"><div>Discarded</div><div class="stat">{discarded}</div></div>
   <div class="card"><div>Crashed</div><div class="stat">{crashed}</div></div>
+  <div class="card"><div>Forks</div><div class="stat">{forked}</div></div>
 </div>
 <div class="card"><canvas id="chart" width="1000" height="320"></canvas>
 <p class="note">Chart plots decision score (private when configured; otherwise public).</p></div>

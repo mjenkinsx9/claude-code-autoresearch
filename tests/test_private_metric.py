@@ -200,16 +200,28 @@ class PrivateMetricTests(unittest.TestCase):
                 "--description", "try other approach",
             ], work)
             self.assertIn("next parent=002", fork.stdout)
+            self.assertIn("status=fork", fork.stdout)
             state = json.loads((work / "autoresearch-results" / "state.json").read_text(encoding="utf-8"))
             self.assertEqual(state["next_parent_experiment"], 2)
             self.assertEqual(state["lineage"], "explore-alt")
+            # Fork does not consume a score experiment id
+            self.assertEqual(int(state["last_experiment"]), 3)
+            import csv
+            rows = list(csv.DictReader(
+                (work / "autoresearch-results" / "results.tsv").open(encoding="utf-8"),
+                delimiter="\t",
+            ))
+            fork_rows = [r for r in rows if r["status"] == "fork"]
+            self.assertEqual(len(fork_rows), 1)
+            self.assertTrue(fork_rows[0]["experiment"].startswith("fork-"))
+            self.assertEqual(fork_rows[0]["parent_experiment"], "002")
+            self.assertEqual(fork_rows[0]["lineage"], "explore-alt")
             target.write_text("aaaaaa", encoding="utf-8")
             run([
                 PYTHON, str(LOOP), "score",
                 "--target", str(target),
                 "--description", "after fork",
             ], work)
-            import csv
             rows = list(csv.DictReader(
                 (work / "autoresearch-results" / "results.tsv").open(encoding="utf-8"),
                 delimiter="\t",
@@ -217,6 +229,7 @@ class PrivateMetricTests(unittest.TestCase):
             last = rows[-1]
             self.assertEqual(last["parent_experiment"], "002")
             self.assertEqual(last["lineage"], "explore-alt")
+            self.assertEqual(last["status"], "keep")
 
 
 if __name__ == "__main__":
