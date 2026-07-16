@@ -43,6 +43,13 @@ class MetricExtractionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             metric_from_output("nope", metric_name="accuracy")
 
+    def test_non_finite_metric_rejected(self):
+        for raw in ("nan", "NaN", "inf", "+inf", "-inf", "Infinity"):
+            with self.subTest(raw=raw):
+                with self.assertRaises(ValueError) as ctx:
+                    metric_from_output(f"Score: {raw}", metric_regex=r"Score:\s*(\S+)")
+                self.assertIn("finite", str(ctx.exception).lower())
+
     def test_resolve_prefers_regex_over_name(self):
         regex, name = resolve_metric_spec(metric_regex=r"Score: (\d+)", metric_name="accuracy")
         self.assertEqual(regex, r"Score: (\d+)")

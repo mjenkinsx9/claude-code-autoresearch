@@ -400,9 +400,13 @@ def metric_from_output(
             raise ValueError("no number found in verify output")
         raw = numbers[-1]
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError as exc:
         raise ValueError(f"extracted metric is not numeric: {raw!r}") from exc
+    if not math.isfinite(value):
+        # nan/inf break keep/discard (nan comparisons are always false) and pollute TSV.
+        raise ValueError(f"extracted metric is not finite: {raw!r}")
+    return value
 
 
 def format_score(score: float | None) -> str:
