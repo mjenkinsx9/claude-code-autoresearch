@@ -39,7 +39,7 @@ can drive keep/discard without scraping prose. Values are not localized.
 
 - `status --json` — full state + budget progress (`candidates_*`, wall fields, `schema_version`)
 - `results --json` — TSV rows with numeric coercion (`score`/`decision_score`/… as numbers or `null`; `experiment`/`parent_experiment` as int or `null`)
-- `best --json` — best score/snapshot + budget summary
+- `best --json` — best score/snapshot + `schema_version`/`mode` + full candidate/wall budget fields (same progress keys as `status --json`)
 
 ## Example (`score` keep)
 

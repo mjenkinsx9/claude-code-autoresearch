@@ -1310,10 +1310,16 @@ def cmd_best(args: argparse.Namespace) -> int:
         "direction": state.get("direction"),
         "target": state.get("target"),
         "targets": state.get("targets") or [state.get("target")],
+        "mode": state.get("mode", HELPER_MODE),
+        "schema_version": int(state.get("schema_version", STATE_SCHEMA_VERSION)),
         "candidates_done": progress["candidates_done"],
         "candidates_remaining": progress["candidates_remaining"],
+        "max_experiments": progress["max_experiments"],
+        "max_wall_seconds": progress["max_wall_seconds"],
         "budget_exhausted": progress["budget_exhausted"],
+        "wall_elapsed_seconds": progress["wall_elapsed_seconds"],
         "wall_remaining_seconds": progress["wall_remaining_seconds"],
+        "wall_budget_exhausted": progress["wall_budget_exhausted"],
     }
     if getattr(args, "json", False):
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -1326,6 +1332,13 @@ def cmd_best(args: argparse.Namespace) -> int:
                 f"Budget: {progress['candidates_done']}/{progress['max_experiments']} "
                 f"({progress['candidates_remaining']} remaining)"
                 + (" EXHAUSTED" if progress["budget_exhausted"] else "")
+            )
+        if progress["max_wall_seconds"] is not None and progress["wall_remaining_seconds"] is not None:
+            print(
+                f"Wall budget: {progress['wall_elapsed_seconds']:.1f}s elapsed / "
+                f"{progress['max_wall_seconds']:.0f}s "
+                f"({progress['wall_remaining_seconds']:.1f}s remaining)"
+                + (" EXHAUSTED" if progress["wall_budget_exhausted"] else "")
             )
     return 0
 

@@ -231,6 +231,11 @@ class BudgetsJsonTests(unittest.TestCase):
             self.assertEqual(best_payload["best_experiment"], 1)
             self.assertIn("candidates_done", best_payload)
             self.assertIn("budget_exhausted", best_payload)
+            self.assertEqual(best_payload.get("schema_version"), 2)
+            self.assertEqual(best_payload.get("mode"), "mechanical-no-headless")
+            self.assertIn("wall_elapsed_seconds", best_payload)
+            self.assertIn("wall_budget_exhausted", best_payload)
+            self.assertIn("max_experiments", best_payload)
 
     def test_status_json_includes_wall_remaining(self):
         with tempfile.TemporaryDirectory() as td:
@@ -266,6 +271,18 @@ class BudgetsJsonTests(unittest.TestCase):
             ], work).stdout
             self.assertIn("Wall budget:", text)
             self.assertIn("remaining", text)
+            best_payload = json.loads(run([
+                PYTHON, str(LOOP), "best", "--json",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work).stdout)
+            self.assertIsNotNone(best_payload.get("wall_remaining_seconds"))
+            self.assertGreater(best_payload["wall_remaining_seconds"], 3500)
+            self.assertEqual(best_payload.get("max_wall_seconds"), 3600.0)
+            best_text = run([
+                PYTHON, str(LOOP), "best",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work).stdout
+            self.assertIn("Wall budget:", best_text)
 
     def test_status_text_shows_budget_progress(self):
         with tempfile.TemporaryDirectory() as td:
