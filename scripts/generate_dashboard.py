@@ -217,16 +217,19 @@ if (scores.length) {{
 """
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate an HTML dashboard from autoresearch results.tsv")
     parser.add_argument("--results", required=True, help="Path to results.tsv")
     parser.add_argument("--output", default="dashboard.html", help="Output HTML file path")
     parser.add_argument("--title", default="Autoresearch Agent Results", help="Dashboard title")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     results = load_results(args.results)
-    output = generate_html(results, args.title)
-    Path(args.output).write_text(output, encoding="utf-8")
+    html = generate_html(results, args.title)
+    out_path = Path(args.output)
+    if out_path.parent and str(out_path.parent) not in ("", "."):
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html, encoding="utf-8")
     print(f"Dashboard written to {args.output}")
     if results:
         best, direction = decision_best_score(results)

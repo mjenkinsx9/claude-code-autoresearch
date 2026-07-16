@@ -94,6 +94,28 @@ class DashboardBestScoreTests(unittest.TestCase):
             self.assertIn('"status": "fork"', html)
             self.assertIn('"score": null', html)
 
+    def test_main_creates_missing_output_parent_dirs(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            results = work / "results.tsv"
+            results.write_text(
+                "experiment\tscore\tmax_score\tbest_score\tprivate_score\tdecision_score\tstatus\t"
+                "description\ttimestamp\tdirection\tverify_command\tguard_command\t"
+                "snapshot\tparent_experiment\tlineage\n"
+                "001\t3\t\t3\t\t3\tkeep\tbaseline\t2026-07-16T00:00:00+00:00\thigher\t\t\t\t\t\n",
+                encoding="utf-8",
+            )
+            out = work / "reports" / "nested" / "dashboard.html"
+            self.assertFalse(out.parent.exists())
+            rc = _dash.main([
+                "--results", str(results),
+                "--output", str(out),
+                "--title", "nested-out",
+            ])
+            self.assertEqual(rc, 0)
+            self.assertTrue(out.is_file())
+            self.assertIn("nested-out", out.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
