@@ -386,6 +386,47 @@ class IntegrityLoopTests(unittest.TestCase):
             self.assertIn("cwd", (blocked.stderr + blocked.stdout).lower())
             self.assertIn("allow-config-change", (blocked.stderr + blocked.stdout).lower())
 
+    def test_max_score_change_requires_allow_config_change(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = self._setup_work(work)
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--max-score", "10",
+            ], work)
+            target.write_text("aaaa", encoding="utf-8")
+            blocked = run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--max-score", "99",
+                "--description", "change max",
+            ], work, check=False)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("max_score", (blocked.stderr + blocked.stdout).lower())
+            # Same max is a no-op (not a seal break)
+            allowed_same = run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--max-score", "10",
+                "--description", "same max",
+            ], work)
+            self.assertIn("STATUS=keep", allowed_same.stdout)
+            # Explicit change with allow updates state
+            target.write_text("aaaaa", encoding="utf-8")
+            run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--max-score", "99",
+                "--allow-config-change",
+                "--description", "raise max",
+            ], work)
+            state = json.loads((work / "autoresearch-results" / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(float(state["max_score"]), 99.0)
+
 
 if __name__ == "__main__":
     unittest.main()

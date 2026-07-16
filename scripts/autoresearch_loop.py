@@ -672,6 +672,17 @@ def _cli_config_overrides(args: argparse.Namespace, state: dict[str, Any]) -> li
     priv = getattr(args, "private_verify_command", None)
     if priv is not None and (priv or "") != (state.get("private_verify_command") or ""):
         changes.append("private_verify_command")
+    if getattr(args, "max_score", None) is not None:
+        cli_max = float(args.max_score)
+        state_max = state.get("max_score", "")
+        if state_max in ("", None):
+            changes.append("max_score")
+        else:
+            try:
+                if float(state_max) != cli_max:
+                    changes.append("max_score")
+            except (TypeError, ValueError):
+                changes.append("max_score")
     if args.cwd is not None:
         state_cwd = (state.get("cwd") or "").strip()
         cli_cwd = str(Path(args.cwd).resolve())
@@ -1102,7 +1113,9 @@ def cmd_score(args: argparse.Namespace) -> int:
         state["next_parent_experiment"] = int(state.get("best_experiment", 1))
 
     max_score_val = state.get("max_score", "")
-    if getattr(args, "max_score", None) is not None and getattr(args, "allow_config_change", False):
+    # Sealed: only update when CLI provided max_score and seal check already passed
+    # (identical value is a no-op; change requires --allow-config-change).
+    if getattr(args, "max_score", None) is not None:
         max_score_val = args.max_score
         state["max_score"] = max_score_val
 
@@ -1491,7 +1504,7 @@ def build_parser() -> argparse.ArgumentParser:
     score.add_argument(
         "--allow-config-change",
         action="store_true",
-        help="Allow changing sealed verify/guard/metric/direction settings mid-run",
+        help="Allow changing sealed verify/guard/metric/direction/private-verify/cwd/targets/max-score mid-run",
     )
     score.add_argument(
         "--strict-snapshots",

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`--metric NAME`** on the loop helper: extract `name: value` / `name = value` (last match wins). Prefer this over the last-number fallback.
-- **Config seal** on `score`: changing verify/guard/metric/direction/private-verify/**cwd**/**targets** mid-run requires `--allow-config-change`.
+- **Config seal** on `score`: changing verify/guard/metric/direction/private-verify/**cwd**/**targets**/**max-score** mid-run requires `--allow-config-change`.
 - **Snapshot sandbox**: revert refuses paths outside `snapshots/`; artifact paths cannot escape the bundle; stores `best_snapshot_sha256` with working `--strict-snapshots`.
 - **Directory multi-file snapshots** with `manifest.json` + `--targets`.
 - **Parent lineage** (`parent_experiment`, `lineage`); after discard next parent is best keep; `fork` subcommand.
@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs (README, SKILL, protocol, program-template, security-workflow, tests.md) aligned with budgets, seal, multi-target, and stop rules.
 
 ### Fixed
+- Seal **`max_score`**: mid-run `--max-score` changes require `--allow-config-change` (same value is a no-op; was previously ignored silently).
 - Fresh `baseline` rotates an orphan `results.tsv` when `state.json` is missing (not only on `--force`), so leftover logs no longer produce duplicate `001` rows.
 - `eval_engine` rejects empty `criteria` / `test_prompts` and criteria missing `question`, so harnesses cannot record vacuous `0/0` scores from a broken config.
 - `results --last 0` returns no rows (was treated as unlimited); negative `--last` is rejected. Avoids Python’s `seq[-0:]` full-slice trap.
