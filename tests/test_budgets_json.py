@@ -193,6 +193,22 @@ class BudgetsJsonTests(unittest.TestCase):
             self.assertIsNone(payload["candidates_remaining"])
             self.assertFalse(payload["budget_exhausted"])
 
+            results = run([
+                PYTHON, str(LOOP), "results", "--json", "--last", "5",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work)
+            rows = json.loads(results.stdout)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["status"], "keep")
+
+            best = run([
+                PYTHON, str(LOOP), "best", "--json",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work)
+            best_payload = json.loads(best.stdout)
+            self.assertEqual(best_payload["best_score"], 3)
+            self.assertEqual(best_payload["best_experiment"], 1)
+
     def test_status_json_budget_progress_after_scores(self):
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)
@@ -241,22 +257,6 @@ class BudgetsJsonTests(unittest.TestCase):
             self.assertEqual(payload2["candidates_done"], 2)
             self.assertEqual(payload2["candidates_remaining"], 0)
             self.assertTrue(payload2["budget_exhausted"])
-
-            results = run([
-                PYTHON, str(LOOP), "results", "--json", "--last", "5",
-                "--output-dir", str(work / "autoresearch-results"),
-            ], work)
-            rows = json.loads(results.stdout)
-            self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["status"], "keep")
-
-            best = run([
-                PYTHON, str(LOOP), "best", "--json",
-                "--output-dir", str(work / "autoresearch-results"),
-            ], work)
-            best_payload = json.loads(best.stdout)
-            self.assertEqual(best_payload["best_score"], 3)
-            self.assertEqual(best_payload["best_experiment"], 1)
 
 
 if __name__ == "__main__":
