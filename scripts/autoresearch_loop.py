@@ -249,6 +249,26 @@ def results_path(output_dir: Path) -> Path:
     return output_dir / "results.tsv"
 
 
+def rotate_results_tsv(output_dir: Path) -> Path | None:
+    """Move ``results.tsv`` aside for ``baseline --force`` without clobbering archives.
+
+    Destination names use UTC timestamp + microseconds. If that path still
+    exists (same-µs double force, or clock skew), append a counter so prior
+    rotated logs are never overwritten by ``Path.rename`` replace semantics.
+    """
+    results = results_path(output_dir)
+    if not results.exists():
+        return None
+    stamp = utc_now().strftime("%Y%m%dT%H%M%S%fZ")
+    bak = output_dir / f"results.prev.{stamp}.tsv"
+    n = 0
+    while bak.exists():
+        n += 1
+        bak = output_dir / f"results.prev.{stamp}.{n}.tsv"
+    results.rename(bak)
+    return bak
+
+
 def load_state(output_dir: Path) -> dict[str, Any]:
     path = state_path(output_dir)
     if not path.exists():
@@ -786,11 +806,9 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 
     if args.force:
         # Replace research log so experiment ids restart cleanly (no duplicate 001 rows).
-        results = results_path(output_dir)
-        if results.exists():
-            bak = output_dir / f"results.prev.{utc_now().strftime('%Y%m%dT%H%M%SZ')}.tsv"
-            results.rename(bak)
-            print(f"Rotated previous results to {bak}", file=sys.stderr)
+        rotated = rotate_results_tsv(output_dir)
+        if rotated is not None:
+            print(f"Rotated previous results to {rotated}", file=sys.stderr)
         # Leave prior snapshots in place for audit; new baseline overwrites experiment_001_keep/
 
     metric_name = args.metric or None

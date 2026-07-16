@@ -285,6 +285,50 @@ class IntegrityLoopTests(unittest.TestCase):
             self.assertEqual(len(prev), 1)
             self.assertIn("002", prev[0].read_text(encoding="utf-8"))
 
+    def test_force_baseline_never_clobbers_prior_rotated_tsv(self):
+        """Second --force must not overwrite an existing results.prev archive."""
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = self._setup_work(work)
+            out = work / "autoresearch-results"
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+            ], work)
+            target.write_text("aaaa", encoding="utf-8")
+            run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "keep for first archive",
+            ], work)
+            # Force twice in a row; archives must both survive even if timestamps collide.
+            for desc in ("force-a", "force-b"):
+                target.write_text("aa", encoding="utf-8")
+                run([
+                    PYTHON, str(LOOP), "baseline",
+                    "--target", str(target),
+                    "--verify-command", f"{PYTHON} score.py target.txt",
+                    "--metric", "Score",
+                    "--direction", "higher",
+                    "--force",
+                    "--description", desc,
+                ], work)
+            prev = sorted(out.glob("results.prev.*.tsv"))
+            self.assertGreaterEqual(len(prev), 2, f"expected >=2 archives, got {prev}")
+            bodies = [p.read_text(encoding="utf-8") for p in prev]
+            # At least one archive must retain the pre-first-force experiment 002 row
+            self.assertTrue(
+                any("002" in body for body in bodies),
+                "prior research log with experiment 002 was lost to rename clobber",
+            )
+            # Current results is a fresh single-row baseline
+            current = (out / "results.tsv").read_text(encoding="utf-8")
+            data_rows = [ln for ln in current.splitlines()[1:] if ln.strip()]
+            self.assertEqual(len(data_rows), 1)
+
     def test_cwd_change_requires_allow_config_change(self):
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)

@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs (README, SKILL, protocol, program-template, security-workflow, tests.md) aligned with budgets, seal, multi-target, and stop rules.
 
 ### Fixed
+- `baseline --force` rotates `results.tsv` with microsecond-unique names and a counter so a second force in the same second never clobbers a prior `results.prev.*.tsv` archive.
 - `baseline` / `score` always print `CANDIDATES_DONE` (and `CANDIDATES_REMAINING` / `WALL_REMAINING_SECONDS` when capped) so harnesses can stop without a separate `status` call; same tokens as `budget_exceeded`.
 - `results --json` coerces score / decision columns and experiment ids to numbers (`null` when blank), matching `status --json` / `best --json` instead of leaving TSV strings.
 - Wall-clock budgets no longer false-expire when host is west of UTC (aware UTC timestamps; naive legacy parsed as local).
