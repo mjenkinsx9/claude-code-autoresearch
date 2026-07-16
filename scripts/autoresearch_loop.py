@@ -1200,6 +1200,7 @@ def cmd_results(args: argparse.Namespace) -> int:
 def cmd_best(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).resolve()
     state = load_state(output_dir)
+    progress = budget_progress(state)
     payload = {
         "best_score": state.get("best_score"),
         "best_experiment": state.get("best_experiment"),
@@ -1207,6 +1208,10 @@ def cmd_best(args: argparse.Namespace) -> int:
         "direction": state.get("direction"),
         "target": state.get("target"),
         "targets": state.get("targets") or [state.get("target")],
+        "candidates_done": progress["candidates_done"],
+        "candidates_remaining": progress["candidates_remaining"],
+        "budget_exhausted": progress["budget_exhausted"],
+        "wall_remaining_seconds": progress["wall_remaining_seconds"],
     }
     if getattr(args, "json", False):
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -1214,6 +1219,12 @@ def cmd_best(args: argparse.Namespace) -> int:
         print(f"Best score: {format_score(float(state['best_score']))}")
         print(f"Best experiment: {int(state['best_experiment']):03d}")
         print(f"Best snapshot: {state['best_snapshot']}")
+        if progress["max_experiments"] is not None:
+            print(
+                f"Budget: {progress['candidates_done']}/{progress['max_experiments']} "
+                f"({progress['candidates_remaining']} remaining)"
+                + (" EXHAUSTED" if progress["budget_exhausted"] else "")
+            )
     return 0
 
 
@@ -1249,6 +1260,11 @@ def cmd_fork(args: argparse.Namespace) -> int:
         "lineage": lineage,
     })
     print(f"Fork ready: next parent={best_exp:03d} lineage={lineage}")
+    print("STATUS=fork")
+    print(f"EXPERIMENT={fork_id}")
+    print(f"PARENT={best_exp:03d}")
+    print(f"BEST={format_score(float(state['best_score']))}")
+    print(f"LINEAGE={lineage}")
     print(f"Logged: {fork_id} (status=fork; does not count toward max_experiments)")
     print("Sealed verify/metric/direction unchanged.")
     if args.description:

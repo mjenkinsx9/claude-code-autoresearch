@@ -200,7 +200,9 @@ class PrivateMetricTests(unittest.TestCase):
                 "--description", "try other approach",
             ], work)
             self.assertIn("next parent=002", fork.stdout)
-            self.assertIn("status=fork", fork.stdout)
+            self.assertIn("STATUS=fork", fork.stdout)
+            self.assertIn("PARENT=002", fork.stdout)
+            self.assertIn("LINEAGE=explore-alt", fork.stdout)
             state = json.loads((work / "autoresearch-results" / "state.json").read_text(encoding="utf-8"))
             self.assertEqual(state["next_parent_experiment"], 2)
             self.assertEqual(state["lineage"], "explore-alt")

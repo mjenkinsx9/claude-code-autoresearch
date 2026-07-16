@@ -209,6 +209,8 @@ class BudgetsJsonTests(unittest.TestCase):
             best_payload = json.loads(best.stdout)
             self.assertEqual(best_payload["best_score"], 3)
             self.assertEqual(best_payload["best_experiment"], 1)
+            self.assertIn("candidates_done", best_payload)
+            self.assertIn("budget_exhausted", best_payload)
 
     def test_status_json_includes_wall_remaining(self):
         with tempfile.TemporaryDirectory() as td:
