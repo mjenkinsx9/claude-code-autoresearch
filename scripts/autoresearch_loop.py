@@ -1058,6 +1058,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"Best snapshot: {state['best_snapshot']}")
     if state.get("metric"):
         print(f"Metric name: {state['metric']}")
+    if state.get("private_verify_command"):
+        print(f"Private verify: {state['private_verify_command']}")
+        print("Decision metric: private (public still logged)")
     if state.get("lineage"):
         print(f"Lineage: {state['lineage']}")
     if state.get("next_parent_experiment") is not None:

@@ -52,6 +52,7 @@ Covered by pytest modules (preferred over manual):
 | `test_eval_engine.py` | Overcount, duplicate ids, output count, untrusted tags |
 | `test_dashboard.py` | Decision best ≠ public spike; lower direction |
 | `test_meta_self_improve.py` | End-to-end Score improves with real CLI |
+| `test_mechanical_examples.py` | Shipped hello-length + constrained-compress examples via real loop |
 
 ## Scenario 4 — Binary eval
 
