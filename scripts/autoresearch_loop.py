@@ -653,7 +653,7 @@ def check_budget(state: dict[str, Any]) -> str | None:
 
 
 def budget_progress(state: dict[str, Any]) -> dict[str, Any]:
-    """Candidate-budget progress for status --json (harness stop checks)."""
+    """Candidate + wall-clock budget progress for status (harness stop checks)."""
     last = int(state.get("last_experiment", 1) or 1)
     candidates_done = max(0, last - 1)
     max_exp = state.get("max_experiments")
@@ -661,16 +661,40 @@ def budget_progress(state: dict[str, Any]) -> dict[str, Any]:
     if max_exp in (None, "", 0, "0"):
         max_exp_i = None
         remaining: int | None = None
-        exhausted = False
+        candidates_exhausted = False
     else:
         max_exp_i = int(max_exp)
         remaining = max(0, max_exp_i - candidates_done)
-        exhausted = candidates_done >= max_exp_i
+        candidates_exhausted = candidates_done >= max_exp_i
+
+    max_wall = state.get("max_wall_seconds")
+    wall_elapsed: float | None = None
+    wall_remaining: float | None = None
+    wall_exhausted = False
+    max_wall_f: float | None = None
+    if max_wall not in (None, "", 0, "0"):
+        max_wall_f = float(max_wall)
+        created = state.get("created_at")
+        if created:
+            try:
+                created_dt = parse_timestamp(str(created))
+                wall_elapsed = max(0.0, (utc_now() - created_dt).total_seconds())
+                wall_remaining = max(0.0, max_wall_f - wall_elapsed)
+                wall_exhausted = wall_elapsed > max_wall_f
+            except ValueError:
+                wall_elapsed = None
+                wall_remaining = None
+                wall_exhausted = True  # fail-closed for status display
+
     return {
         "candidates_done": candidates_done,
         "candidates_remaining": remaining,
         "max_experiments": max_exp_i,
-        "budget_exhausted": exhausted,
+        "max_wall_seconds": max_wall_f,
+        "wall_elapsed_seconds": wall_elapsed,
+        "wall_remaining_seconds": wall_remaining,
+        "wall_budget_exhausted": wall_exhausted,
+        "budget_exhausted": candidates_exhausted or wall_exhausted,
     }
 
 
@@ -688,6 +712,9 @@ def state_public_dict(state: dict[str, Any]) -> dict[str, Any]:
         "max_wall_seconds": state.get("max_wall_seconds"),
         "candidates_done": progress["candidates_done"],
         "candidates_remaining": progress["candidates_remaining"],
+        "wall_elapsed_seconds": progress["wall_elapsed_seconds"],
+        "wall_remaining_seconds": progress["wall_remaining_seconds"],
+        "wall_budget_exhausted": progress["wall_budget_exhausted"],
         "budget_exhausted": progress["budget_exhausted"],
         "metric": state.get("metric"),
         "mode": state.get("mode", "mechanical-no-headless"),
@@ -1068,15 +1095,27 @@ def cmd_status(args: argparse.Namespace) -> int:
     # Budget progress (same numbers as status --json)
     if progress["max_experiments"] is not None:
         rem = progress["candidates_remaining"]
+        cand_exh = (
+            progress["candidates_done"] >= progress["max_experiments"]
+            if progress["max_experiments"] is not None
+            else False
+        )
         print(
             f"Budget: {progress['candidates_done']}/{progress['max_experiments']} candidates used"
             f" ({rem} remaining)"
-            + (" — EXHAUSTED" if progress["budget_exhausted"] else "")
+            + (" — EXHAUSTED" if cand_exh else "")
         )
-    elif state.get("max_experiments") not in (None, ""):
-        print(f"Max experiments (candidates): {state['max_experiments']}")
-    if state.get("max_wall_seconds") not in (None, ""):
-        print(f"Max wall seconds: {state['max_wall_seconds']}")
+    if progress["max_wall_seconds"] is not None:
+        elapsed = progress["wall_elapsed_seconds"]
+        remaining = progress["wall_remaining_seconds"]
+        if elapsed is not None and remaining is not None:
+            print(
+                f"Wall budget: {elapsed:.1f}s elapsed / {progress['max_wall_seconds']:.0f}s"
+                f" ({remaining:.1f}s remaining)"
+                + (" — EXHAUSTED" if progress["wall_budget_exhausted"] else "")
+            )
+        else:
+            print(f"Max wall seconds: {progress['max_wall_seconds']:.0f}")
     if state.get("instructions"):
         print(f"Instructions: {state['instructions']}")
     path = results_path(output_dir)

@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `run-verify` dry-runs `--private-verify-command` when set and prints the decision metric (private vs public).
 - `status --json` includes `candidates_done`, `candidates_remaining`, and `budget_exhausted` for harness stop checks.
 - Plain `status` prints budget progress (`Budget: N/M candidates used`) plus lineage/next parent.
+- `status` / `status --json` report wall-clock `wall_elapsed_seconds` / `wall_remaining_seconds` when `--max-wall-seconds` is set.
 - Pytest smokes `examples/mechanical/hello-length` and `constrained-compress` through the real loop helper.
 - `baseline --force` rotates `results.tsv` to `results.prev.<timestamp>.tsv` so experiment ids restart without duplicate rows.
 

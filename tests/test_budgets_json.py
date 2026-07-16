@@ -209,6 +209,41 @@ class BudgetsJsonTests(unittest.TestCase):
             self.assertEqual(best_payload["best_score"], 3)
             self.assertEqual(best_payload["best_experiment"], 1)
 
+    def test_status_json_includes_wall_remaining(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
+                encoding="utf-8",
+            )
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--max-wall-seconds", "3600",
+            ], work)
+            payload = json.loads(run([
+                PYTHON, str(LOOP), "status", "--json",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work).stdout)
+            self.assertIsNotNone(payload.get("wall_elapsed_seconds"))
+            self.assertIsNotNone(payload.get("wall_remaining_seconds"))
+            self.assertLess(payload["wall_elapsed_seconds"], 60)
+            self.assertGreater(payload["wall_remaining_seconds"], 3500)
+            self.assertFalse(payload["wall_budget_exhausted"])
+            self.assertFalse(payload["budget_exhausted"])
+            text = run([
+                PYTHON, str(LOOP), "status",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work).stdout
+            self.assertIn("Wall budget:", text)
+            self.assertIn("remaining", text)
+
     def test_status_text_shows_budget_progress(self):
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)
