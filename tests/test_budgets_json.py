@@ -209,6 +209,38 @@ class BudgetsJsonTests(unittest.TestCase):
             self.assertEqual(best_payload["best_score"], 3)
             self.assertEqual(best_payload["best_experiment"], 1)
 
+    def test_status_text_shows_budget_progress(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
+                encoding="utf-8",
+            )
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--max-experiments", "3",
+            ], work)
+            target.write_text("aaaa", encoding="utf-8")
+            run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "one",
+            ], work)
+            text = run([
+                PYTHON, str(LOOP), "status",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work).stdout
+            self.assertIn("Budget: 1/3 candidates used", text)
+            self.assertIn("2 remaining", text)
+            self.assertNotIn("EXHAUSTED", text)
+
     def test_status_json_budget_progress_after_scores(self):
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)

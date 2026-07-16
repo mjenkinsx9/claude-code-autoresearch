@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Score **ties** use `math.isclose` so float noise (e.g. `0.1+0.2` vs `0.3`) no longer blocks size-based simplification or spuriously counts as improvement.
 - `run-verify` dry-runs `--private-verify-command` when set and prints the decision metric (private vs public).
 - `status --json` includes `candidates_done`, `candidates_remaining`, and `budget_exhausted` for harness stop checks.
+- Plain `status` prints budget progress (`Budget: N/M candidates used`) plus lineage/next parent.
 - `baseline --force` rotates `results.tsv` to `results.prev.<timestamp>.tsv` so experiment ids restart without duplicate rows.
 
 ### Removed

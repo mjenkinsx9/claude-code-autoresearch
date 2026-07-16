@@ -1049,6 +1049,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         print(json.dumps(state_public_dict(state), indent=2, sort_keys=True))
         return 0
+    progress = budget_progress(state)
     print(f"Target: {state['target']}")
     if state.get("targets") and len(state["targets"]) > 1:
         print(f"Targets: {', '.join(state['targets'])}")
@@ -1057,8 +1058,22 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"Best snapshot: {state['best_snapshot']}")
     if state.get("metric"):
         print(f"Metric name: {state['metric']}")
-    if state.get("max_experiments") not in (None, ""):
+    if state.get("lineage"):
+        print(f"Lineage: {state['lineage']}")
+    if state.get("next_parent_experiment") is not None:
+        print(f"Next parent: {int(state['next_parent_experiment']):03d}")
+    # Budget progress (same numbers as status --json)
+    if progress["max_experiments"] is not None:
+        rem = progress["candidates_remaining"]
+        print(
+            f"Budget: {progress['candidates_done']}/{progress['max_experiments']} candidates used"
+            f" ({rem} remaining)"
+            + (" — EXHAUSTED" if progress["budget_exhausted"] else "")
+        )
+    elif state.get("max_experiments") not in (None, ""):
         print(f"Max experiments (candidates): {state['max_experiments']}")
+    if state.get("max_wall_seconds") not in (None, ""):
+        print(f"Max wall seconds: {state['max_wall_seconds']}")
     if state.get("instructions"):
         print(f"Instructions: {state['instructions']}")
     path = results_path(output_dir)
