@@ -30,6 +30,13 @@ from typing import Any
 SUPPORTED_OUTPUT_SUFFIXES = (".txt", ".md", ".html", ".json", ".py", ".jsx", ".ts", ".tsx")
 
 
+def ensure_parent_dir(path: Path) -> None:
+    """Create parent directories for a write path when they are missing."""
+    parent = path.parent
+    if parent and str(parent) not in ("", "."):
+        parent.mkdir(parents=True, exist_ok=True)
+
+
 def load_eval_config(config_path: str) -> dict[str, Any]:
     try:
         config = json.loads(Path(config_path).read_text(encoding="utf-8"))
@@ -355,7 +362,9 @@ def main(argv: list[str] | None = None) -> dict[str, Any] | int:
 
     prompt = build_eval_prompt(outputs, config["criteria"])
     if args.prompt_file:
-        Path(args.prompt_file).write_text(prompt, encoding="utf-8")
+        prompt_path = Path(args.prompt_file)
+        ensure_parent_dir(prompt_path)
+        prompt_path.write_text(prompt, encoding="utf-8")
         print(f"Judge prompt written to {args.prompt_file}")
 
     raw_judgments = load_judgments(args)
@@ -384,7 +393,9 @@ def main(argv: list[str] | None = None) -> dict[str, Any] | int:
     results["allow_partial"] = bool(args.allow_partial_judgments)
     print_summary(results)
     if args.results_file:
-        Path(args.results_file).write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+        results_path = Path(args.results_file)
+        ensure_parent_dir(results_path)
+        results_path.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
         print(f"\nResults saved to {args.results_file}")
     return results
 

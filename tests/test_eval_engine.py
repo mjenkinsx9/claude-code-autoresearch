@@ -153,6 +153,48 @@ class EvalEngineIntegrityTests(unittest.TestCase):
         body = prompt[start:end]
         self.assertNotIn("</UNTRUSTED_OUTPUT>", body)
 
+    def test_cli_creates_parent_dirs_for_prompt_and_results_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            config = work / "eval.json"
+            config.write_text(json.dumps({
+                "criteria": [{"id": 1, "question": "Does it work?"}],
+                "test_prompts": ["demo"],
+            }), encoding="utf-8")
+            out_dir = work / "outputs"
+            out_dir.mkdir()
+            (out_dir / "sample.txt").write_text("hello", encoding="utf-8")
+            prompt_path = work / "nested" / "judge" / "prompt.md"
+            result = run([
+                PYTHON, str(EVAL),
+                "--eval-config", str(config),
+                "--output-dir", str(out_dir),
+                "--emit-prompt",
+                "--prompt-file", str(prompt_path),
+            ], work)
+            self.assertTrue(prompt_path.is_file())
+            self.assertIn("UNTRUSTED_OUTPUT", prompt_path.read_text(encoding="utf-8"))
+
+            judgments = work / "judgments.json"
+            judgments.write_text(json.dumps({
+                "outputs": [{
+                    "output_id": "sample.txt",
+                    "scores": [{"criterion": 1, "passed": True, "question": "Does it work?"}],
+                }]
+            }), encoding="utf-8")
+            results_path = work / "reports" / "eval" / "results.json"
+            result = run([
+                PYTHON, str(EVAL),
+                "--eval-config", str(config),
+                "--output-dir", str(out_dir),
+                "--judgments-file", str(judgments),
+                "--results-file", str(results_path),
+            ], work)
+            self.assertTrue(results_path.is_file())
+            payload = json.loads(results_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["total_yes"], 1)
+            self.assertEqual(payload["max_score"], 1)
+
     def test_empty_criteria_config_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)
