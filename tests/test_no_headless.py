@@ -79,6 +79,9 @@ class NoHeadlessAutoresearchTests(unittest.TestCase):
             ], work)
             self.assertIn("DISCARD", discard.stdout)
             self.assertIn("STATUS=discard", discard.stdout)
+            self.assertIn("REVERTED=true", discard.stdout)
+            self.assertIn("SNAPSHOT=", discard.stdout)
+            self.assertIn("BEST_SNAPSHOT=", discard.stdout)
             self.assertEqual(target.read_text(), "aaaa")
 
             rows = (work / "autoresearch-results" / "results.tsv").read_text()

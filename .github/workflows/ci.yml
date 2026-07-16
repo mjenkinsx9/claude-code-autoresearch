@@ -19,6 +19,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: pip install -r requirements-dev.txt
+      - name: Syntax check
+        run: python -m py_compile scripts/*.py tests/*.py
       - run: python -m pytest tests/ -v
       - name: CLI help smoke checks
         shell: bash
@@ -26,3 +28,4 @@ jobs:
           python scripts/autoresearch_loop.py --help
           python scripts/eval_engine.py --help
           python scripts/generate_dashboard.py --help
+          python scripts/autoresearch_loop.py score --help | grep -q allow-config-change

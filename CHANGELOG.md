@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fork` appends a `status=fork` audit row to `results.tsv` (does not consume candidate budget).
 - `score` / `baseline` print machine-parseable tokens: `STATUS=`, `EXPERIMENT=`, `PARENT=`, `DECISION=`, `BEST=`, `DIRECTION=`, `PUBLIC=` / `PRIVATE=` / `LINEAGE=` (exit 0 keep/discard, 1 crash, 2 budget with `STATUS=budget_exceeded`).
 - `fork` prints `STATUS=fork` (+ PARENT/LINEAGE/BEST); `best --json` includes budget progress fields.
+- `score`/`baseline` emit `SNAPSHOT=` and `REVERTED=true|false` (plus `BEST_SNAPSHOT=` when reverted); CI runs `py_compile`.
 - Auto-migrate `results.tsv` headers when new columns are added so mid-run helper upgrades stay parseable.
 - `baseline --force` rotates `results.tsv` to `results.prev.<timestamp>.tsv` so experiment ids restart without duplicate rows.
 

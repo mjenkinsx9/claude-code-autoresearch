@@ -879,6 +879,8 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     if private_cmd:
         print(f"PRIVATE={format_score(private_score)}")
         print(f"Public score: {format_score(score)} | Private score: {format_score(private_score)}")
+    print(f"SNAPSHOT={snapshot}")
+    print("REVERTED=false")
     print(f"Snapshot: {snapshot}")
     return 0
 
@@ -1073,6 +1075,10 @@ def cmd_score(args: argparse.Namespace) -> int:
         print(f"PRIVATE={format_score(private_score)}")
     if lineage:
         print(f"LINEAGE={lineage}")
+    print(f"SNAPSHOT={snapshot}")
+    print(f"REVERTED={'true' if status != 'keep' else 'false'}")
+    if status != "keep":
+        print(f"BEST_SNAPSHOT={state['best_snapshot']}")
     print(
         f"Score: {format_score(public_score)} | Decision: {format_score(decision_score)} | "
         f"Best: {format_score(float(state['best_score']))} | Direction: {direction} | Parent: {parent_id:03d}"
