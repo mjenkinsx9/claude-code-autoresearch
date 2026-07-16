@@ -1,6 +1,6 @@
 # Autoresearch Agent verification
 
-Last verified: 2026-07-16 (integrity kernel)
+Last verified: 2026-07-16 (full hardening stack + meta self-improve)
 
 ## Scenario 1 — CLI help exposes no-headless commands
 
