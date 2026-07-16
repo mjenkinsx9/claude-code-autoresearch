@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs (README, SKILL, protocol, program-template, security-workflow, tests.md) aligned with budgets, seal, multi-target, and stop rules.
 
 ### Fixed
+- `--parent-experiment` rejects non-integers and values `< 1` with a clean error (no traceback); zero-padded ids like `001` still work.
 - `eval_engine.py` creates missing parent directories for `--prompt-file` and `--results-file` (nested harness paths no longer fail with `FileNotFoundError`).
 - `generate_dashboard.py` creates missing parent directories for `--output` (nested report paths no longer fail with `FileNotFoundError`).
 - Metric extraction rejects non-finite values (`nan` / `inf`) so a permissive `--metric-regex` cannot keep/discard or log invalid scores.

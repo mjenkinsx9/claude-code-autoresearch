@@ -299,6 +299,26 @@ def allocate_fork_id(output_dir: Path) -> str:
     return candidate
 
 
+def resolve_parent_experiment(raw: Any, state: dict[str, Any]) -> int:
+    """Resolve ``--parent-experiment`` or fall back to state next/best parent.
+
+    Rejects non-integers and values ``< 1`` with a clean error (no traceback).
+    Accepts zero-padded strings like ``001``.
+    """
+    if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+        return int(state.get("next_parent_experiment", state.get("best_experiment", 1)))
+    text = str(raw).strip()
+    try:
+        parent_id = int(text, 10)
+    except ValueError as exc:
+        raise SystemExit(
+            f"ERROR: invalid --parent-experiment {raw!r}; expected integer >= 1"
+        ) from exc
+    if parent_id < 1:
+        raise SystemExit(f"ERROR: --parent-experiment must be >= 1, got {parent_id}")
+    return parent_id
+
+
 def load_state(output_dir: Path) -> dict[str, Any]:
     path = state_path(output_dir)
     if not path.exists():
@@ -1008,11 +1028,10 @@ def cmd_score(args: argparse.Namespace) -> int:
         targets = [ensure_target_allowed(Path(p), allowed) for p in state_raw]
 
     experiment = int(state.get("last_experiment", 1)) + 1
-    parent = getattr(args, "parent_experiment", None)
-    if parent is None or parent == "":
-        parent_id = int(state.get("next_parent_experiment", state.get("best_experiment", 1)))
-    else:
-        parent_id = int(parent)
+    parent_id = resolve_parent_experiment(
+        getattr(args, "parent_experiment", None),
+        state,
+    )
 
     direction = args.direction if args.direction is not None else state["direction"]
     verify_command = args.verify_command if args.verify_command is not None else state["verify_command"]

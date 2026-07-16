@@ -119,6 +119,42 @@ class LineageMultiTargetTests(unittest.TestCase):
             self.assertTrue(snap.is_dir())
             self.assertTrue((snap / "manifest.json").exists())
 
+    def test_invalid_parent_experiment_is_rejected_cleanly(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aa", encoding="utf-8")
+            write_scorer(work)
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+            ], work)
+            target.write_text("aaa", encoding="utf-8")
+            for bad in ("0", "-1", "abc", "1.5"):
+                with self.subTest(parent=bad):
+                    blocked = run([
+                        PYTHON, str(LOOP), "score",
+                        "--target", str(target),
+                        "--parent-experiment", bad,
+                        "--description", f"bad parent {bad}",
+                    ], work, check=False)
+                    self.assertNotEqual(blocked.returncode, 0)
+                    msg = blocked.stderr + blocked.stdout
+                    self.assertIn("parent-experiment", msg.lower())
+                    self.assertNotIn("Traceback", msg)
+            # Zero-padded valid parent is accepted
+            ok = run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--parent-experiment", "001",
+                "--description", "padded parent",
+            ], work)
+            self.assertIn("PARENT=001", ok.stdout)
+            self.assertIn("STATUS=keep", ok.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
