@@ -54,11 +54,20 @@ def load_eval_config(config_path: str) -> dict[str, Any]:
     if len(criteria) == 0:
         # Empty criteria yields 0/0 (100% or 0%) and is never a valid binary eval.
         raise SystemExit("Error: eval config 'criteria' must contain at least one criterion")
-    for i, criterion in enumerate(criteria):
+    seen_ids: set[Any] = set()
+    for i, criterion in enumerate(criteria, start=1):
         if not isinstance(criterion, dict):
-            raise SystemExit(f"Error: criteria[{i}] must be an object")
+            raise SystemExit(f"Error: criteria[{i - 1}] must be an object")
         if not str(criterion.get("question", "")).strip():
-            raise SystemExit(f"Error: criteria[{i}] missing non-empty 'question'")
+            raise SystemExit(f"Error: criteria[{i - 1}] missing non-empty 'question'")
+        # Effective id matches scoring: explicit id or 1-based position.
+        cid = criterion.get("id", i)
+        if cid in seen_ids:
+            raise SystemExit(
+                f"Error: duplicate criterion id {cid!r} in eval config "
+                f"(each criterion needs a unique id; defaults are 1..N by position)"
+            )
+        seen_ids.add(cid)
     if not isinstance(config["test_prompts"], list) or len(config["test_prompts"]) == 0:
         raise SystemExit("Error: eval config 'test_prompts' must be a non-empty list")
     return config

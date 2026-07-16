@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs (README, SKILL, protocol, program-template, security-workflow, tests.md) aligned with budgets, seal, multi-target, and stop rules.
 
 ### Fixed
+- `eval_engine` rejects duplicate criterion ids in eval config (including conflicts with default 1..N positional ids) before emit-prompt/score.
 - `generate_dashboard.py` rejects non-file `--results` paths (directories) with a clean error instead of a traceback.
 - `--max-score` must be finite and `>= 0` (negative known maxima rejected on baseline and sealed score updates).
 - Free-text machine tokens (`DESCRIPTION`, `LINEAGE`) are single-line (tabs/newlines collapsed) so values with whitespace cannot split `KEY=value` parsers.

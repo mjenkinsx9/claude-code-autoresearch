@@ -214,6 +214,28 @@ class EvalEngineIntegrityTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("at least one criterion", result.stderr + result.stdout)
 
+    def test_duplicate_criterion_ids_in_config_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            cfg = work / "eval.json"
+            cfg.write_text(json.dumps({
+                "criteria": [
+                    {"id": 1, "question": "a?"},
+                    {"id": 1, "question": "b?"},
+                ],
+                "test_prompts": ["p1"],
+            }), encoding="utf-8")
+            out = work / "out"
+            out.mkdir()
+            (out / "a.txt").write_text("x", encoding="utf-8")
+            result = run(
+                [PYTHON, str(EVAL), "--eval-config", str(cfg), "--output-dir", str(out), "--emit-prompt"],
+                work,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("duplicate criterion id", (result.stderr + result.stdout).lower())
+
     def test_criterion_without_question_rejected(self):
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)
