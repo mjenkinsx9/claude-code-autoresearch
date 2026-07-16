@@ -55,8 +55,12 @@ def parse_timestamp(value: str) -> datetime:
 
     Aware values are converted to UTC. Naive values (legacy) are interpreted as
     *local* wall-clock time, then converted to UTC — never treated as UTC.
+    Trailing ``Z`` is accepted as ``+00:00``.
     """
-    dt = datetime.fromisoformat(value)
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    dt = datetime.fromisoformat(raw)
     if dt.tzinfo is None:
         local_tz = datetime.now().astimezone().tzinfo
         dt = dt.replace(tzinfo=local_tz)
@@ -341,14 +345,51 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def combined_targets_sha256(targets: list[Path]) -> str:
+def content_hash_pairs(pairs: list[tuple[str, bytes]]) -> str:
+    """Canonical content hash: sort by path string, then path\\0bytes\\0."""
     digest = hashlib.sha256()
-    for target in targets:
-        digest.update(str(target).encode("utf-8"))
+    for path, data in sorted(pairs, key=lambda item: item[0]):
+        digest.update(path.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(target.read_bytes())
+        digest.update(data)
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def combined_targets_sha256(targets: list[Path]) -> str:
+    pairs = [(str(t.resolve()), t.read_bytes()) for t in targets]
+    return content_hash_pairs(pairs)
+
+
+def resolve_artifact_under_snapshot(snap_path: Path, artifact_path: str) -> Path:
+    """Resolve artifact path and require it stays under the snapshot directory."""
+    if not artifact_path or artifact_path.startswith("/") or Path(artifact_path).is_absolute():
+        raise SystemExit(
+            f"ERROR: snapshot artifact_path must be relative (got {artifact_path!r})"
+        )
+    # Reject parent traversal before join
+    parts = Path(artifact_path).parts
+    if ".." in parts:
+        raise SystemExit(f"ERROR: snapshot artifact_path must not contain '..' (got {artifact_path!r})")
+    candidate = (snap_path / artifact_path).resolve()
+    snap_resolved = snap_path.resolve()
+    try:
+        candidate.relative_to(snap_resolved)
+    except ValueError:
+        raise SystemExit(
+            f"ERROR: snapshot artifact {candidate} escapes snapshot dir {snap_resolved}"
+        )
+    if not candidate.is_file():
+        raise SystemExit(f"ERROR: snapshot artifact is not a file: {candidate}")
+    return candidate
+
+
+def snapshot_bundle_sha256(snap_path: Path, manifest: dict[str, Any]) -> str:
+    pairs: list[tuple[str, bytes]] = []
+    for entry in manifest.get("files", []):
+        art = resolve_artifact_under_snapshot(snap_path, entry["artifact_path"])
+        pairs.append((entry["path"], art.read_bytes()))
+    return content_hash_pairs(pairs)
 
 
 def total_size(targets: list[Path]) -> int:
@@ -373,7 +414,7 @@ def snapshot_targets(targets: list[Path], snapshots_dir: Path, experiment: int, 
         artifact.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(target, artifact)
         manifest_files.append({
-            "path": str(target),
+            "path": str(target.resolve()),
             "artifact_path": str(artifact.relative_to(dest)),
             "sha256": file_sha256(artifact),
             "bytes": artifact.stat().st_size,
@@ -433,39 +474,35 @@ def revert_targets_from_snapshot(
         raise SystemExit(f"ERROR: snapshot directory missing manifest.json: {snap_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     by_path = {entry["path"]: entry for entry in manifest.get("files", [])}
+    # Always validate artifact paths are sandboxed; verify content hashes.
+    for entry in manifest.get("files", []):
+        art = resolve_artifact_under_snapshot(snap_path, entry["artifact_path"])
+        if entry.get("sha256") and file_sha256(art) != entry.get("sha256"):
+            msg = f"snapshot artifact hash mismatch: {art}"
+            if strict_snapshots:
+                raise SystemExit(f"ERROR: {msg}")
+            print(f"WARNING: {msg}", file=sys.stderr)
+
     if expected_sha256:
-        # Recompute from snapshot artifacts
-        digest = hashlib.sha256()
-        for entry in sorted(manifest.get("files", []), key=lambda e: e["path"]):
-            digest.update(entry["path"].encode("utf-8"))
-            digest.update(b"\0")
-            art = snap_path / entry["artifact_path"]
-            digest.update(art.read_bytes())
-            digest.update(b"\0")
-        actual = digest.hexdigest()
-        # Also accept the combined live-targets hash stored at keep time
-        if actual != expected_sha256 and expected_sha256:
-            # compare against stored entry sha chain if matches state hash from targets
-            pass
-        # Prefer verifying each file's sha256 from manifest vs artifact
-        for entry in manifest.get("files", []):
-            art = snap_path / entry["artifact_path"]
-            if file_sha256(art) != entry.get("sha256"):
-                msg = f"snapshot artifact hash mismatch: {art}"
-                if strict_snapshots:
-                    raise SystemExit(f"ERROR: {msg}")
-                print(f"WARNING: {msg}", file=sys.stderr)
+        actual = snapshot_bundle_sha256(snap_path, manifest)
+        if actual != expected_sha256:
+            msg = (
+                f"snapshot bundle hash mismatch for {snap_path}: "
+                f"expected {expected_sha256}, got {actual}"
+            )
+            if strict_snapshots:
+                raise SystemExit(f"ERROR: {msg}")
+            print(f"WARNING: {msg}", file=sys.stderr)
 
     for target in targets:
-        entry = by_path.get(str(target))
+        entry = by_path.get(str(target.resolve())) or by_path.get(str(target))
         if entry is None:
-            # try basename match
             matches = [e for e in manifest.get("files", []) if Path(e["path"]).name == target.name]
             if len(matches) == 1:
                 entry = matches[0]
             else:
                 raise SystemExit(f"ERROR: snapshot does not contain target {target}")
-        art = snap_path / entry["artifact_path"]
+        art = resolve_artifact_under_snapshot(snap_path, entry["artifact_path"])
         shutil.copy2(art, target)
 
 
@@ -532,7 +569,33 @@ def _cli_config_overrides(args: argparse.Namespace, state: dict[str, Any]) -> li
     priv = getattr(args, "private_verify_command", None)
     if priv is not None and (priv or "") != (state.get("private_verify_command") or ""):
         changes.append("private_verify_command")
+    if args.cwd is not None:
+        state_cwd = state.get("cwd") or ""
+        if str(Path(args.cwd).resolve()) != str(Path(state_cwd).resolve() if state_cwd else Path.cwd().resolve()):
+            # Compare resolved; empty state cwd means baseline used cwd at that time
+            if state_cwd:
+                if str(Path(args.cwd).resolve()) != str(Path(state_cwd).resolve()):
+                    changes.append("cwd")
+            elif str(Path(args.cwd).resolve()) != str(Path.cwd().resolve()):
+                changes.append("cwd")
     return changes
+
+
+def _targets_override_requested(args: argparse.Namespace, state: dict[str, Any], allowed_root: Path) -> tuple[list[Path], bool]:
+    """Return (targets, changed). When CLI omits target(s), use state. Seal changes."""
+    state_raw = state.get("targets") or ([state["target"]] if state.get("target") else [])
+    state_targets = [Path(p).resolve() for p in state_raw]
+    cli_raw: list[str] | None = None
+    if getattr(args, "targets", None):
+        cli_raw = list(args.targets)
+    elif getattr(args, "target", None):
+        cli_raw = [args.target]
+    if cli_raw is None:
+        return [ensure_target_allowed(t, allowed_root) for t in state_targets], False
+    cli_targets = [ensure_target_allowed(Path(p), allowed_root) for p in cli_raw]
+    cli_set = sorted(t.resolve() for t in cli_targets)
+    changed = cli_set != sorted(state_targets)
+    return cli_targets, changed
 
 
 def check_budget(state: dict[str, Any]) -> str | None:
@@ -560,8 +623,11 @@ def check_budget(state: dict[str, Any]) -> str | None:
                     return (
                         f"BUDGET_EXCEEDED: max_wall_seconds={max_wall} elapsed={elapsed:.1f}s"
                     )
-            except ValueError:
-                pass
+            except ValueError as exc:
+                return (
+                    f"BUDGET_EXCEEDED: unparseable created_at={created!r} ({exc}); "
+                    f"refusing score while max_wall_seconds={max_wall} is set"
+                )
     return None
 
 
@@ -707,15 +773,21 @@ def cmd_score(args: argparse.Namespace) -> int:
         return BUDGET_EXIT_CODE
 
     allowed = Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve()
-    targets = resolve_targets(args, state, allowed)
+    targets, targets_changed = _targets_override_requested(args, state, allowed)
 
     overrides = _cli_config_overrides(args, state)
+    if targets_changed:
+        overrides = list(overrides) + ["targets"]
     if overrides and not getattr(args, "allow_config_change", False):
         raise SystemExit(
             "ERROR: sealed config change refused for: "
             + ", ".join(overrides)
             + ". Re-run with --allow-config-change if intentional."
         )
+    # Always revert the sealed full target set from state unless an allowed override changed it
+    if not targets_changed:
+        state_raw = state.get("targets") or ([state["target"]] if state.get("target") else [])
+        targets = [ensure_target_allowed(Path(p), allowed) for p in state_raw]
 
     experiment = int(state.get("last_experiment", 1)) + 1
     parent = getattr(args, "parent_experiment", None)

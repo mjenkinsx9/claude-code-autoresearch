@@ -88,7 +88,7 @@ LOOP FOREVER:
 
 **Crashes**: If a run crashes due to a fixable bug (typo, missing import), fix it and re-run. If the approach is fundamentally broken, log it as "crash" and move on.
 
-**NEVER STOP**: Once experimentation begins, do NOT pause to ask the human. The human might be asleep or away. You are autonomous. Work indefinitely until manually interrupted.
+**Stop conditions**: Prefer mechanical budgets (`--max-experiments`, `--max-wall-seconds`). Also stop on SKILL stop rules (flaky verify, secrets/production touch, bounds reached). Do not ignore safety stop rules.
 
 ## Output Format
 

@@ -243,7 +243,7 @@ iteration	vector	severity	owasp	stride	confidence	location	description
 
 #### Phase 6: Repeat
 
-- **Unbounded:** Keep finding vulnerabilities. Never stop. Never ask.
+- **Unbounded:** Keep finding vulnerabilities until the user interrupts, a bound is reached, or a stop rule fires (secrets/production touch, repeated failures).
 - **Bounded:** After N active-harness iterations, generate final report and stop.
 - **Coverage tracking:** Every 5 iterations, print coverage summary.
 
