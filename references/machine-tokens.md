@@ -1,0 +1,59 @@
+# Machine-parseable helper tokens
+
+`scripts/autoresearch_loop.py` prints `KEY=value` lines on stdout so harnesses
+can drive keep/discard without scraping prose. Values are not localized.
+
+## Common tokens
+
+| Token | Where | Meaning |
+|---|---|---|
+| `STATUS` | baseline, score, fork, budget | `keep` \| `discard` \| `crash` \| `fork` \| `budget_exceeded` |
+| `MODE` | baseline, score, budget | Always `mechanical-no-headless` |
+| `SCHEMA_VERSION` | baseline, score, budget | Integer; currently `2` (also in `state.json`) |
+| `OUTPUT_DIR` | baseline, score, budget | Absolute path to results dir |
+| `EXPERIMENT` | baseline, score, fork | `001`… or `fork-…` id |
+| `PARENT` | baseline, score, fork | Parent experiment id (blank on baseline) |
+| `DECISION` | baseline, score | Metric used for keep/discard this step |
+| `BEST` | baseline, score, fork, budget | Current best decision score |
+| `BEST_EXPERIMENT` | budget | Best experiment id when budget blocks score |
+| `DIRECTION` | baseline, score | `higher` or `lower` |
+| `PUBLIC` | baseline, score | Public verify metric |
+| `PRIVATE` | baseline, score | Present only if private verify is configured |
+| `LINEAGE` | score, fork | Strategy tag when set |
+| `SNAPSHOT` | baseline, score | Path to this experiment’s snapshot |
+| `REVERTED` | baseline, score | `true` if target restored to best; else `false` |
+| `BEST_SNAPSHOT` | score | Present when `REVERTED=true` |
+| `CANDIDATES_DONE` | budget | Count of post-baseline scores already run |
+| `CANDIDATES_REMAINING` | budget | Remaining candidate slots (if capped) |
+| `WALL_REMAINING_SECONDS` | budget | Remaining wall budget (if capped) |
+
+## Exit codes (`score`)
+
+| Code | Meaning |
+|---|---|
+| 0 | `keep` or `discard` completed (discard still reverts targets) |
+| 1 | `crash` (verify/private/guard failed; targets reverted) |
+| 2 | `budget_exceeded` (no mutation by helper) |
+
+## JSON alternatives
+
+- `status --json` — full state + budget progress (`candidates_*`, wall fields, `schema_version`)
+- `results --json` — TSV rows (includes `decision_score`, `parent_experiment`)
+- `best --json` — best score/snapshot + budget summary
+
+## Example (`score` keep)
+
+```text
+STATUS=keep
+MODE=mechanical-no-headless
+SCHEMA_VERSION=2
+OUTPUT_DIR=/path/to/autoresearch-results
+EXPERIMENT=002
+PARENT=001
+DECISION=4
+BEST=4
+DIRECTION=higher
+PUBLIC=4
+SNAPSHOT=/path/to/snapshots/experiment_002_keep
+REVERTED=false
+```

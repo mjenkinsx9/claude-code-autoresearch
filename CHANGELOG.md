@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fork` prints `STATUS=fork` (+ PARENT/LINEAGE/BEST); `best --json` includes budget progress fields.
 - `score`/`baseline` emit `SNAPSHOT=` and `REVERTED=true|false` (plus `BEST_SNAPSHOT=` when reverted); CI runs `py_compile` under bash so Windows globs expand.
 - `state.json` / tokens include `schema_version` (2) and `MODE=mechanical-no-headless`; score/baseline print `OUTPUT_DIR=`.
+- Budget refusal prints full token block (`BEST=`, `CANDIDATES_*`, wall remaining); `references/machine-tokens.md` documents the parse surface.
 - Auto-migrate `results.tsv` headers when new columns are added so mid-run helper upgrades stay parseable.
 - `baseline --force` rotates `results.tsv` to `results.prev.<timestamp>.tsv` so experiment ids restart without duplicate rows.
 

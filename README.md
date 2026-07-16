@@ -117,7 +117,7 @@ python scripts/autoresearch_loop.py results --json --last 10
 python scripts/autoresearch_loop.py best --json
 ```
 
-Each `score` also prints parseable tokens on stdout, e.g. `STATUS=keep`, `EXPERIMENT=002`, `DECISION=1.5`, `BEST=1.5`. Budget blocks print `STATUS=budget_exceeded` and exit 2.
+Each `score` also prints parseable tokens on stdout, e.g. `STATUS=keep`, `EXPERIMENT=002`, `DECISION=1.5`, `BEST=1.5`. Budget blocks print `STATUS=budget_exceeded` and exit 2. Full token list: [`references/machine-tokens.md`](references/machine-tokens.md).
 
 ---
 

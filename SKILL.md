@@ -243,6 +243,7 @@ Load only when needed:
 | `references/results-logging.md` | Managing `results.tsv` |
 | `references/eval-script-guide.md` | Writing frozen mechanical evaluate scripts |
 | `references/eval-criteria-guide.md` | Writing binary criteria |
+| `references/machine-tokens.md` | Parse `STATUS=` / `EXPERIMENT=` / budget tokens from helper stdout |
 | `references/program-template.md` | Creating `program.md` |
 | `examples/mechanical/` | Minimal mechanical metric examples |
 
