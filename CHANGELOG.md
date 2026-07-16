@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `results.tsv` **`decision_score`** column: metric used for keep/discard (private when configured); dashboard table shows a Decision column.
 - `fork` appends a `status=fork` audit row to `results.tsv` (does not consume candidate budget).
 - `score` / `baseline` print machine-parseable `STATUS=keep|discard|crash` lines (exit 0 keep/discard, 1 crash, 2 budget).
+- Auto-migrate `results.tsv` headers when new columns are added so mid-run helper upgrades stay parseable.
 - `baseline --force` rotates `results.tsv` to `results.prev.<timestamp>.tsv` so experiment ids restart without duplicate rows.
 
 ### Removed

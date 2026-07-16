@@ -271,9 +271,37 @@ def sanitize_tsv_field(value: Any) -> str:
     return "".join(" " if ch in ("\t", "\n", "\r") else ch for ch in s if ch in ("\t", "\n", "\r") or ord(ch) >= 32).strip()
 
 
+def ensure_results_schema(path: Path) -> None:
+    """Rewrite results.tsv if its header is missing columns from RESULTS_HEADER.
+
+    Long-running runs that upgrade the helper mid-stream would otherwise append
+    wide rows under a stale header and break DictReader consumers.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    with path.open(encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh, delimiter="\t")
+        old_fields = list(reader.fieldnames or [])
+        if old_fields == RESULTS_HEADER:
+            return
+        rows = list(reader)
+    tmp = path.with_suffix(".tsv.migrate")
+    with tmp.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=RESULTS_HEADER, delimiter="\t", extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: sanitize_tsv_field(row.get(key, "")) for key in RESULTS_HEADER})
+    os.replace(tmp, path)
+    print(
+        f"Migrated results.tsv header ({len(old_fields)} -> {len(RESULTS_HEADER)} columns)",
+        file=sys.stderr,
+    )
+
+
 def append_results(output_dir: Path, row: dict[str, Any]) -> None:
     path = results_path(output_dir)
-    exists = path.exists()
+    ensure_results_schema(path)
+    exists = path.exists() and path.stat().st_size > 0
     with path.open("a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=RESULTS_HEADER, delimiter="\t", extrasaction="ignore")
         if not exists:

@@ -191,6 +191,58 @@ class IntegrityLoopTests(unittest.TestCase):
             state2 = json.loads((work / "autoresearch-results" / "state.json").read_text(encoding="utf-8"))
             self.assertEqual(state2["timeout"], 90)
 
+    def test_results_header_migrates_when_columns_added(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = self._setup_work(work)
+            out = work / "autoresearch-results"
+            out.mkdir()
+            # Stale header without decision_score / lineage extras
+            stale = out / "results.tsv"
+            stale.write_text(
+                "experiment\tscore\tmax_score\tbest_score\tstatus\tdescription\t"
+                "timestamp\tdirection\tverify_command\tguard_command\tsnapshot\n"
+                "001\t3\t\t3\tkeep\tbaseline\t2026-07-16T00:00:00\thigher\t\t\tsnap\n",
+                encoding="utf-8",
+            )
+            # Seed minimal state via real baseline in a sibling dir then copy? 
+            # Easier: run score path after baseline in work with pre-seeded stale TSV
+            # Baseline refuses if state exists; score needs state. Create baseline first without TSV race:
+            # Write state by running baseline in empty dir then replace TSV with stale and score.
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--output-dir", str(out),
+            ], work)
+            # Overwrite with stale-schema TSV that still has baseline row semantics
+            stale.write_text(
+                "experiment\tscore\tmax_score\tbest_score\tstatus\tdescription\t"
+                "timestamp\tdirection\tverify_command\tguard_command\tsnapshot\n"
+                "001\t3\t\t3\tkeep\tbaseline\t2026-07-16T00:00:00\thigher\t\t\tsnap\n",
+                encoding="utf-8",
+            )
+            target.write_text("aaaa", encoding="utf-8")
+            scored = run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "after migrate",
+                "--output-dir", str(out),
+            ], work)
+            self.assertIn("STATUS=keep", scored.stdout)
+            header = stale.read_text(encoding="utf-8").splitlines()[0].split("\t")
+            self.assertIn("decision_score", header)
+            self.assertIn("parent_experiment", header)
+            self.assertIn("lineage", header)
+            import csv
+            rows = list(csv.DictReader(stale.open(encoding="utf-8"), delimiter="\t"))
+            self.assertEqual(rows[0]["experiment"], "001")
+            self.assertEqual(rows[0].get("decision_score", ""), "")  # migrated blank
+            self.assertEqual(rows[-1]["status"], "keep")
+            self.assertEqual(rows[-1]["decision_score"], "4")
+
     def test_force_baseline_rotates_results_tsv(self):
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)
