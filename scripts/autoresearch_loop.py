@@ -43,6 +43,9 @@ BUDGET_EXIT_CODE = 2
 # Float comparison for metric ties / non-improvements (benchmark noise).
 TIE_REL_TOL = 1e-9
 TIE_ABS_TOL = 1e-12
+# Bump when state.json / results.tsv contract changes in a breaking way for consumers.
+STATE_SCHEMA_VERSION = 2
+HELPER_MODE = "mechanical-no-headless"
 
 
 def utc_now() -> datetime:
@@ -746,7 +749,8 @@ def state_public_dict(state: dict[str, Any]) -> dict[str, Any]:
         "wall_budget_exhausted": progress["wall_budget_exhausted"],
         "budget_exhausted": progress["budget_exhausted"],
         "metric": state.get("metric"),
-        "mode": state.get("mode", "mechanical-no-headless"),
+        "mode": state.get("mode", HELPER_MODE),
+        "schema_version": int(state.get("schema_version", STATE_SCHEMA_VERSION)),
         "best_snapshot": state.get("best_snapshot"),
         "lineage": state.get("lineage", ""),
         "next_parent_experiment": state.get("next_parent_experiment"),
@@ -848,7 +852,8 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         "max_wall_seconds": max_wall_seconds if max_wall_seconds is not None else "",
         "created_at": utc_now_iso(),
         "updated_at": utc_now_iso(),
-        "mode": "mechanical-no-headless",
+        "mode": HELPER_MODE,
+        "schema_version": STATE_SCHEMA_VERSION,
     }
     save_state(output_dir, state)
     append_results(output_dir, {
@@ -870,6 +875,9 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     })
     print(f"Baseline recorded: {format_score(decision_score)} ({args.direction} is better)")
     print("STATUS=keep")
+    print(f"MODE={HELPER_MODE}")
+    print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
+    print(f"OUTPUT_DIR={output_dir}")
     print("EXPERIMENT=001")
     print("PARENT=")
     print(f"DECISION={format_score(decision_score)}")
@@ -1041,6 +1049,8 @@ def cmd_score(args: argparse.Namespace) -> int:
         "cwd": args.cwd or "",
         "timeout": args.timeout,
         "lineage": lineage,
+        "mode": HELPER_MODE,
+        "schema_version": STATE_SCHEMA_VERSION,
     })
     save_state(output_dir, state)
 
@@ -1065,6 +1075,9 @@ def cmd_score(args: argparse.Namespace) -> int:
     print(f"Experiment {experiment:03d}: {status.upper()}")
     # Machine-parseable tokens for harness scripts (do not localize)
     print(f"STATUS={status}")
+    print(f"MODE={HELPER_MODE}")
+    print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
+    print(f"OUTPUT_DIR={output_dir}")
     print(f"EXPERIMENT={experiment:03d}")
     print(f"PARENT={parent_id:03d}")
     print(f"DECISION={format_score(decision_score)}")

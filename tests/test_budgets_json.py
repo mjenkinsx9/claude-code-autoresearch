@@ -190,6 +190,7 @@ class BudgetsJsonTests(unittest.TestCase):
             self.assertEqual(payload["best_score"], 3)
             self.assertEqual(payload["best_experiment"], 1)
             self.assertIn("mode", payload)
+            self.assertEqual(payload.get("schema_version"), 2)
             self.assertEqual(payload["candidates_done"], 0)
             self.assertIsNone(payload["candidates_remaining"])
             self.assertFalse(payload["budget_exhausted"])

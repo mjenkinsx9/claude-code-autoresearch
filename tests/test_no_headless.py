@@ -56,6 +56,9 @@ class NoHeadlessAutoresearchTests(unittest.TestCase):
             self.assertIn("EXPERIMENT=001", base.stdout)
             self.assertIn("DIRECTION=higher", base.stdout)
             self.assertIn("PUBLIC=3", base.stdout)
+            self.assertIn("MODE=mechanical-no-headless", base.stdout)
+            self.assertIn("SCHEMA_VERSION=2", base.stdout)
+            self.assertIn("OUTPUT_DIR=", base.stdout)
 
             target.write_text("aaaa")
             keep = run([
