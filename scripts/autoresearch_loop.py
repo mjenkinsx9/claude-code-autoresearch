@@ -1319,8 +1319,12 @@ def cmd_results(args: argparse.Namespace) -> int:
     with path.open(encoding="utf-8", newline="") as fh:
         rows = list(csv.DictReader(fh, delimiter="\t"))
     last_n = getattr(args, "last", None)
-    if last_n:
-        rows = rows[-int(last_n) :]
+    if last_n is not None:
+        n = int(last_n)
+        if n < 0:
+            raise SystemExit("ERROR: --last must be >= 0")
+        # Note: rows[-0:] is the full list in Python; handle 0 explicitly.
+        rows = [] if n == 0 else rows[-n:]
     if getattr(args, "json", False):
         print(json.dumps([coerce_results_json_row(r) for r in rows], indent=2))
     else:
@@ -1506,7 +1510,12 @@ def build_parser() -> argparse.ArgumentParser:
     results = subparsers.add_parser("results", help="Show results.tsv rows")
     results.add_argument("--output-dir", default="./autoresearch-results/")
     results.add_argument("--json", action="store_true", help="Emit JSON array of rows")
-    results.add_argument("--last", type=int, default=None, help="Only last N rows")
+    results.add_argument(
+        "--last",
+        type=int,
+        default=None,
+        help="Only last N rows (0 = empty; must be >= 0)",
+    )
     results.set_defaults(func=cmd_results)
 
     best = subparsers.add_parser("best", help="Show current best score/snapshot")

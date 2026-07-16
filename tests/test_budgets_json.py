@@ -237,6 +237,19 @@ class BudgetsJsonTests(unittest.TestCase):
             self.assertIn("wall_budget_exhausted", best_payload)
             self.assertIn("max_experiments", best_payload)
 
+            # --last 0 must not mean "all rows" (and must not use rows[-0:] full slice)
+            zero = run([
+                PYTHON, str(LOOP), "results", "--json", "--last", "0",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work)
+            self.assertEqual(json.loads(zero.stdout), [])
+            bad = run([
+                PYTHON, str(LOOP), "results", "--json", "--last", "-1",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work, check=False)
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertIn("--last must be >= 0", bad.stderr + bad.stdout)
+
     def test_status_json_includes_wall_remaining(self):
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)
