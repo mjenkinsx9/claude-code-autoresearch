@@ -710,6 +710,15 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     if state_path(output_dir).exists() and not args.force:
         raise SystemExit(f"ERROR: {state_path(output_dir)} already exists. Pass --force to replace the baseline.")
 
+    if args.force:
+        # Replace research log so experiment ids restart cleanly (no duplicate 001 rows).
+        results = results_path(output_dir)
+        if results.exists():
+            bak = output_dir / f"results.prev.{utc_now().strftime('%Y%m%dT%H%M%SZ')}.tsv"
+            results.rename(bak)
+            print(f"Rotated previous results to {bak}", file=sys.stderr)
+        # Leave prior snapshots in place for audit; new baseline overwrites experiment_001_keep/
+
     metric_name = args.metric or None
     metric_regex = args.metric_regex or None
     if not metric_name and not metric_regex:

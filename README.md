@@ -107,6 +107,8 @@ python scripts/autoresearch_loop.py score \
 
 The helper keeps improvements, reverts regressions to the best snapshot, and appends `autoresearch-results/results.tsv`. Mid-run changes to sealed fields (verify/guard/metric/direction/private-verify/cwd/targets) require `--allow-config-change`.
 
+To restart a run in the same output dir: `baseline ... --force` (replaces `state.json` and rotates the old TSV to `results.prev.<timestamp>.tsv`).
+
 Machine-readable status:
 
 ```bash

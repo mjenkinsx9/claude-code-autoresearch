@@ -191,6 +191,48 @@ class IntegrityLoopTests(unittest.TestCase):
             state2 = json.loads((work / "autoresearch-results" / "state.json").read_text(encoding="utf-8"))
             self.assertEqual(state2["timeout"], 90)
 
+    def test_force_baseline_rotates_results_tsv(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = self._setup_work(work)
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+            ], work)
+            target.write_text("aaaa", encoding="utf-8")
+            run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "pre-force keep",
+            ], work)
+            results = work / "autoresearch-results" / "results.tsv"
+            before = results.read_text(encoding="utf-8")
+            self.assertIn("002", before)
+
+            target.write_text("aa", encoding="utf-8")
+            forced = run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--force",
+                "--description", "fresh baseline",
+            ], work)
+            self.assertIn("Baseline recorded", forced.stdout)
+            new_text = results.read_text(encoding="utf-8")
+            # Only one experiment row after header
+            data_rows = [ln for ln in new_text.splitlines()[1:] if ln.strip()]
+            self.assertEqual(len(data_rows), 1)
+            self.assertIn("001", data_rows[0])
+            self.assertNotIn("002", new_text)
+            prev = list((work / "autoresearch-results").glob("results.prev.*.tsv"))
+            self.assertEqual(len(prev), 1)
+            self.assertIn("002", prev[0].read_text(encoding="utf-8"))
+
     def test_cwd_change_requires_allow_config_change(self):
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)
