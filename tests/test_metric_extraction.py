@@ -49,5 +49,17 @@ class MetricExtractionTests(unittest.TestCase):
         self.assertIsNone(name)
 
 
+class FloatTieTests(unittest.TestCase):
+    def test_classic_float_sum_is_tie(self):
+        self.assertTrue(_loop.is_tie(0.1 + 0.2, 0.3))
+        self.assertFalse(_loop.is_improvement(0.1 + 0.2, 0.3, "higher"))
+        self.assertFalse(_loop.is_improvement(0.1 + 0.2, 0.3, "lower"))
+
+    def test_clear_improvement_still_keeps(self):
+        self.assertTrue(_loop.is_improvement(1.01, 1.0, "higher"))
+        self.assertTrue(_loop.is_improvement(0.99, 1.0, "lower"))
+        self.assertFalse(_loop.is_improvement(0.99, 1.0, "higher"))
+
+
 if __name__ == "__main__":
     unittest.main()

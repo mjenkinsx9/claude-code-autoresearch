@@ -24,6 +24,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -39,6 +40,9 @@ DEFAULT_TIMEOUT = 120
 MAX_SCOPED_FILES = 10
 MAX_TOTAL_BYTES_WARN = 500 * 1024
 BUDGET_EXIT_CODE = 2
+# Float comparison for metric ties / non-improvements (benchmark noise).
+TIE_REL_TOL = 1e-9
+TIE_ABS_TOL = 1e-12
 
 
 def utc_now() -> datetime:
@@ -327,16 +331,33 @@ def format_score(score: float | None) -> str:
     return f"{score:.6g}"
 
 
-def is_improvement(score: float, best_score: float, direction: str) -> bool:
+def is_tie(
+    score: float,
+    best_score: float,
+    *,
+    rel_tol: float = TIE_REL_TOL,
+    abs_tol: float = TIE_ABS_TOL,
+) -> bool:
+    """True when scores are effectively equal (float-safe)."""
+    return math.isclose(float(score), float(best_score), rel_tol=rel_tol, abs_tol=abs_tol)
+
+
+def is_improvement(
+    score: float,
+    best_score: float,
+    direction: str,
+    *,
+    rel_tol: float = TIE_REL_TOL,
+    abs_tol: float = TIE_ABS_TOL,
+) -> bool:
+    """True when score is strictly better than best after float-tie tolerance."""
+    if is_tie(score, best_score, rel_tol=rel_tol, abs_tol=abs_tol):
+        return False
     if direction == "higher":
-        return score > best_score
+        return float(score) > float(best_score)
     if direction == "lower":
-        return score < best_score
+        return float(score) < float(best_score)
     raise ValueError(f"unsupported direction: {direction}")
-
-
-def is_tie(score: float, best_score: float) -> bool:
-    return score == best_score
 
 
 def file_sha256(path: Path) -> str:
@@ -1010,7 +1031,7 @@ def cmd_results(args: argparse.Namespace) -> int:
         print(json.dumps(rows, indent=2))
     else:
         for row in rows:
-            print("\t".join(row.get(h, "") for h in RESULTS_HEADER if h in row or True))
+            print("\t".join(str(row.get(h, "")) for h in RESULTS_HEADER))
     return 0
 
 
@@ -1025,14 +1046,12 @@ def cmd_best(args: argparse.Namespace) -> int:
         "target": state.get("target"),
         "targets": state.get("targets") or [state.get("target")],
     }
-    if getattr(args, "json", False) or True:
-        # best always JSON-friendly; --json optional for symmetry
-        if getattr(args, "json", False):
-            print(json.dumps(payload, indent=2, sort_keys=True))
-        else:
-            print(f"Best score: {format_score(float(state['best_score']))}")
-            print(f"Best experiment: {int(state['best_experiment']):03d}")
-            print(f"Best snapshot: {state['best_snapshot']}")
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"Best score: {format_score(float(state['best_score']))}")
+        print(f"Best experiment: {int(state['best_experiment']):03d}")
+        print(f"Best snapshot: {state['best_snapshot']}")
     return 0
 
 

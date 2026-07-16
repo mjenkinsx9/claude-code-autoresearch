@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Wall-clock budgets no longer false-expire when host is west of UTC (aware UTC timestamps; naive legacy parsed as local).
 - Strict snapshot hash comparison for directory snapshots; multi-target subset no longer silently shrinks sealed scope.
+- Score **ties** use `math.isclose` so float noise (e.g. `0.1+0.2` vs `0.3`) no longer blocks size-based simplification or spuriously counts as improvement.
 
 ### Removed
 - Confirmed absence of stale `docs/superpowers/` scratch plan.
