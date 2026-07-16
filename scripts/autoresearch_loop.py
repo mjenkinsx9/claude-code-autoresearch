@@ -269,6 +269,36 @@ def rotate_results_tsv(output_dir: Path) -> Path | None:
     return bak
 
 
+def existing_experiment_ids(output_dir: Path) -> set[str]:
+    """Experiment ids already present in results.tsv (for unique fork markers)."""
+    path = results_path(output_dir)
+    if not path.exists():
+        return set()
+    ids: set[str] = set()
+    with path.open(encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh, delimiter="\t"):
+            exp = (row.get("experiment") or "").strip()
+            if exp:
+                ids.add(exp)
+    return ids
+
+
+def allocate_fork_id(output_dir: Path) -> str:
+    """Allocate a unique ``fork-…`` experiment id for audit rows.
+
+    Second-precision stamps collided when several forks ran in the same second.
+    Use microseconds and, if needed, a counter against existing TSV ids.
+    """
+    used = existing_experiment_ids(output_dir)
+    stamp = utc_now().strftime("%Y%m%dT%H%M%S%f")
+    candidate = f"fork-{stamp}"
+    n = 0
+    while candidate in used:
+        n += 1
+        candidate = f"fork-{stamp}-{n}"
+    return candidate
+
+
 def load_state(output_dir: Path) -> dict[str, Any]:
     path = state_path(output_dir)
     if not path.exists():
@@ -1356,7 +1386,7 @@ def cmd_fork(args: argparse.Namespace) -> int:
     state["updated_at"] = utc_now_iso()
     save_state(output_dir, state)
     # Audit trail only — does not consume a candidate score slot
-    fork_id = f"fork-{utc_now().strftime('%Y%m%dT%H%M%S')}"
+    fork_id = allocate_fork_id(output_dir)
     append_results(output_dir, {
         "experiment": fork_id,
         "score": "",

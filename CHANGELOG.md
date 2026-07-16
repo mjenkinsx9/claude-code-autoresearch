@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs (README, SKILL, protocol, program-template, security-workflow, tests.md) aligned with budgets, seal, multi-target, and stop rules.
 
 ### Fixed
+- `fork` experiment ids use microsecond stamps (+ counter) so multiple forks in the same second no longer share one `fork-…` id in `results.tsv`.
 - `best --json` includes `schema_version`, `mode`, and full wall/candidate budget fields (parity with `status --json`); plain `best` prints wall budget when capped.
 - `baseline --force` rotates `results.tsv` with microsecond-unique names and a counter so a second force in the same second never clobbers a prior `results.prev.*.tsv` archive.
 - `baseline` / `score` always print `CANDIDATES_DONE` (and `CANDIDATES_REMAINING` / `WALL_REMAINING_SECONDS` when capped) so harnesses can stop without a separate `status` call; same tokens as `budget_exceeded`.

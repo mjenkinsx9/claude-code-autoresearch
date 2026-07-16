@@ -238,6 +238,34 @@ class PrivateMetricTests(unittest.TestCase):
             self.assertEqual(last["lineage"], "explore-alt")
             self.assertEqual(last["status"], "keep")
 
+    def test_rapid_forks_get_unique_experiment_ids(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
+                encoding="utf-8",
+            )
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+            ], work)
+            out = work / "autoresearch-results"
+            for _ in range(5):
+                run([PYTHON, str(LOOP), "fork", "--output-dir", str(out), "--lineage", "burst"], work)
+            import csv
+            rows = list(csv.DictReader((out / "results.tsv").open(encoding="utf-8"), delimiter="\t"))
+            fork_ids = [r["experiment"] for r in rows if r["status"] == "fork"]
+            self.assertEqual(len(fork_ids), 5)
+            self.assertEqual(len(set(fork_ids)), 5, f"duplicate fork experiment ids: {fork_ids}")
+            for fid in fork_ids:
+                self.assertTrue(fid.startswith("fork-"))
+
 
 if __name__ == "__main__":
     unittest.main()
