@@ -7,7 +7,7 @@ Track every iteration in a structured log. Enables pattern recognition and preve
 `scripts/autoresearch_loop.py` writes `autoresearch-results/results.tsv` automatically.
 
 ```tsv
-experiment	score	max_score	best_score	private_score	status	description	timestamp	direction	verify_command	guard_command	snapshot	parent_experiment	lineage
+experiment	score	max_score	best_score	private_score	decision_score	status	description	timestamp	direction	verify_command	guard_command	snapshot	parent_experiment	lineage
 ```
 
 ### Columns
@@ -19,6 +19,7 @@ experiment	score	max_score	best_score	private_score	status	description	timestamp
 | max_score | number | Optional known maximum; blank when unknown |
 | best_score | number | Best known **decision** score after this row |
 | private_score | number | Private/held-out metric when configured; else blank |
+| decision_score | number | Metric used for keep/discard this row (private if set, else public) |
 | status | enum | `keep`, `discard`, or `crash` |
 | description | string | One-sentence description of what was tried |
 | timestamp | ISO datetime | When the row was written |

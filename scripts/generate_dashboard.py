@@ -35,8 +35,10 @@ def load_results(results_path: str) -> list[dict[str, Any]]:
             row["private_score_num"] = parse_number(row.get("private_score"))
             row["best_score_num"] = parse_number(row.get("best_score"))
             row["max_score_num"] = parse_number(row.get("max_score"))
-            # Prefer private as decision metric when present; else public score
-            decision = row["private_score_num"]
+            # Prefer explicit decision_score column; else private; else public
+            decision = parse_number(row.get("decision_score"))
+            if decision is None:
+                decision = row["private_score_num"]
             if decision is None:
                 decision = row["score_num"]
             row["decision_score_num"] = decision

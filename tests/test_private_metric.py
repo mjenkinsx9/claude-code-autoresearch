@@ -52,6 +52,52 @@ class PrivateMetricTests(unittest.TestCase):
             self.assertIn("Decision metric: 7", out.stdout)
             self.assertIn("(private)", out.stdout)
 
+    def test_results_log_decision_score_column(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("public=1 private=5", encoding="utf-8")
+            (work / "public.py").write_text(
+                "import pathlib\n"
+                "t=pathlib.Path('target.txt').read_text()\n"
+                "print('Score:', t.count('x'))\n",
+                encoding="utf-8",
+            )
+            (work / "private.py").write_text(
+                "import pathlib,re\n"
+                "t=pathlib.Path('target.txt').read_text()\n"
+                "m=re.search(r'private=(\\d+)', t)\n"
+                "print('Score:', m.group(1) if m else 0)\n",
+                encoding="utf-8",
+            )
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} public.py",
+                "--private-verify-command", f"{PYTHON} private.py",
+                "--metric", "Score",
+                "--direction", "higher",
+            ], work)
+            target.write_text("public=1 private=1 xxxx", encoding="utf-8")
+            run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "public up private down",
+            ], work)
+            import csv
+            rows = list(csv.DictReader(
+                (work / "autoresearch-results" / "results.tsv").open(encoding="utf-8"),
+                delimiter="\t",
+            ))
+            self.assertIn("decision_score", rows[0])
+            self.assertEqual(rows[0]["decision_score"], "5")
+            # Discarded row: public spiked to 4 x's, private decision 1
+            last = rows[-1]
+            self.assertEqual(last["status"], "discard")
+            self.assertEqual(last["score"], "4")
+            self.assertEqual(last["private_score"], "1")
+            self.assertEqual(last["decision_score"], "1")
+
     def test_public_up_private_down_discards(self):
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)
