@@ -40,6 +40,28 @@ MAX_SCOPED_FILES = 10
 MAX_TOTAL_BYTES_WARN = 500 * 1024
 BUDGET_EXIT_CODE = 2
 
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def utc_now_iso() -> str:
+    """Timezone-aware UTC timestamp for state/TSV (always includes offset)."""
+    return utc_now().isoformat()
+
+
+def parse_timestamp(value: str) -> datetime:
+    """Parse ISO timestamps into UTC.
+
+    Aware values are converted to UTC. Naive values (legacy) are interpreted as
+    *local* wall-clock time, then converted to UTC — never treated as UTC.
+    """
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        local_tz = datetime.now().astimezone().tzinfo
+        dt = dt.replace(tzinfo=local_tz)
+    return dt.astimezone(timezone.utc)
+
 RESULTS_HEADER = [
     "experiment",
     "score",
@@ -360,7 +382,7 @@ def snapshot_targets(targets: list[Path], snapshots_dir: Path, experiment: int, 
         "type": "step_code_snapshot",
         "experiment": experiment,
         "status": status,
-        "created_at": datetime.now().isoformat(),
+        "created_at": utc_now_iso(),
         "files": manifest_files,
     }
     (dest / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -532,11 +554,8 @@ def check_budget(state: dict[str, Any]) -> str | None:
         created = state.get("created_at")
         if created:
             try:
-                created_dt = datetime.fromisoformat(created)
-                if created_dt.tzinfo is None:
-                    created_dt = created_dt.replace(tzinfo=timezone.utc)
-                now = datetime.now(timezone.utc)
-                elapsed = (now - created_dt.astimezone(timezone.utc)).total_seconds()
+                created_dt = parse_timestamp(str(created))
+                elapsed = (utc_now() - created_dt).total_seconds()
                 if elapsed > float(max_wall):
                     return (
                         f"BUDGET_EXCEEDED: max_wall_seconds={max_wall} elapsed={elapsed:.1f}s"
@@ -649,8 +668,8 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         "instructions": instructions,
         "max_experiments": max_experiments if max_experiments is not None else "",
         "max_wall_seconds": max_wall_seconds if max_wall_seconds is not None else "",
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
+        "created_at": utc_now_iso(),
+        "updated_at": utc_now_iso(),
         "mode": "mechanical-no-headless",
     }
     save_state(output_dir, state)
@@ -662,7 +681,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         "private_score": format_score(private_score),
         "status": "keep",
         "description": args.description or "baseline",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": utc_now_iso(),
         "direction": args.direction,
         "verify_command": args.verify_command,
         "guard_command": args.guard_command or "",
@@ -814,7 +833,7 @@ def cmd_score(args: argparse.Namespace) -> int:
 
     state.update({
         "last_experiment": experiment,
-        "updated_at": datetime.now().isoformat(),
+        "updated_at": utc_now_iso(),
         "target": str(targets[0]),
         "targets": [str(t) for t in targets],
         "direction": direction,
@@ -837,7 +856,7 @@ def cmd_score(args: argparse.Namespace) -> int:
         "private_score": format_score(private_score),
         "status": status,
         "description": reason,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": utc_now_iso(),
         "direction": direction,
         "verify_command": verify_command,
         "guard_command": guard_command or "",
@@ -953,7 +972,7 @@ def cmd_fork(args: argparse.Namespace) -> int:
     lineage = args.lineage or state.get("lineage", "") or "fork"
     state["next_parent_experiment"] = best_exp
     state["lineage"] = lineage
-    state["updated_at"] = datetime.now().isoformat()
+    state["updated_at"] = utc_now_iso()
     save_state(output_dir, state)
     print(f"Fork ready: next parent={best_exp:03d} lineage={lineage}")
     print("Sealed verify/metric/direction unchanged.")
