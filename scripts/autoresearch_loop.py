@@ -652,8 +652,31 @@ def check_budget(state: dict[str, Any]) -> str | None:
     return None
 
 
+def budget_progress(state: dict[str, Any]) -> dict[str, Any]:
+    """Candidate-budget progress for status --json (harness stop checks)."""
+    last = int(state.get("last_experiment", 1) or 1)
+    candidates_done = max(0, last - 1)
+    max_exp = state.get("max_experiments")
+    max_exp_i: int | None
+    if max_exp in (None, "", 0, "0"):
+        max_exp_i = None
+        remaining: int | None = None
+        exhausted = False
+    else:
+        max_exp_i = int(max_exp)
+        remaining = max(0, max_exp_i - candidates_done)
+        exhausted = candidates_done >= max_exp_i
+    return {
+        "candidates_done": candidates_done,
+        "candidates_remaining": remaining,
+        "max_experiments": max_exp_i,
+        "budget_exhausted": exhausted,
+    }
+
+
 def state_public_dict(state: dict[str, Any]) -> dict[str, Any]:
     targets = state.get("targets") or ([state["target"]] if state.get("target") else [])
+    progress = budget_progress(state)
     return {
         "target": state.get("target"),
         "targets": targets,
@@ -663,6 +686,9 @@ def state_public_dict(state: dict[str, Any]) -> dict[str, Any]:
         "direction": state.get("direction"),
         "max_experiments": state.get("max_experiments"),
         "max_wall_seconds": state.get("max_wall_seconds"),
+        "candidates_done": progress["candidates_done"],
+        "candidates_remaining": progress["candidates_remaining"],
+        "budget_exhausted": progress["budget_exhausted"],
         "metric": state.get("metric"),
         "mode": state.get("mode", "mechanical-no-headless"),
         "best_snapshot": state.get("best_snapshot"),

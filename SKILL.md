@@ -133,7 +133,7 @@ For each experiment:
 | Multi-file targets | `--targets a.py b.py` (snapshotted/reverted together; sealed) |
 | Private / holdout metric | `--private-verify-command '...'` — **decision** score; public still logged |
 | Budgets | `--max-experiments N`, `--max-wall-seconds S` at baseline |
-| JSON for harnesses | `status --json`, `results --json --last N`, `best --json` |
+| JSON for harnesses | `status --json` (includes `candidates_done` / `candidates_remaining` / `budget_exhausted`), `results --json --last N`, `best --json` |
 | Fork from best | `fork --lineage name` (does not reseal verify/metric) |
 | Strict snapshots | `--strict-snapshots` on score — fail closed on hash mismatch |
 | Instructions | `--instructions path-or-text` stored in state for the harness to re-read |

@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Strict snapshot hash comparison for directory snapshots; multi-target subset no longer silently shrinks sealed scope.
 - Score **ties** use `math.isclose` so float noise (e.g. `0.1+0.2` vs `0.3`) no longer blocks size-based simplification or spuriously counts as improvement.
 - `run-verify` dry-runs `--private-verify-command` when set and prints the decision metric (private vs public).
+- `status --json` includes `candidates_done`, `candidates_remaining`, and `budget_exhausted` for harness stop checks.
 
 ### Removed
 - Confirmed absence of stale `docs/superpowers/` scratch plan.

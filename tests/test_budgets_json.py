@@ -189,6 +189,58 @@ class BudgetsJsonTests(unittest.TestCase):
             self.assertEqual(payload["best_score"], 3)
             self.assertEqual(payload["best_experiment"], 1)
             self.assertIn("mode", payload)
+            self.assertEqual(payload["candidates_done"], 0)
+            self.assertIsNone(payload["candidates_remaining"])
+            self.assertFalse(payload["budget_exhausted"])
+
+    def test_status_json_budget_progress_after_scores(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
+                encoding="utf-8",
+            )
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--max-experiments", "2",
+            ], work)
+            target.write_text("aaaa", encoding="utf-8")
+            run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "first candidate",
+            ], work)
+            status = run([
+                PYTHON, str(LOOP), "status", "--json",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work)
+            payload = json.loads(status.stdout)
+            self.assertEqual(payload["candidates_done"], 1)
+            self.assertEqual(payload["candidates_remaining"], 1)
+            self.assertFalse(payload["budget_exhausted"])
+            self.assertEqual(payload["max_experiments"], 2)
+
+            target.write_text("aaaaa", encoding="utf-8")
+            run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "second candidate",
+            ], work)
+            status2 = run([
+                PYTHON, str(LOOP), "status", "--json",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work)
+            payload2 = json.loads(status2.stdout)
+            self.assertEqual(payload2["candidates_done"], 2)
+            self.assertEqual(payload2["candidates_remaining"], 0)
+            self.assertTrue(payload2["budget_exhausted"])
 
             results = run([
                 PYTHON, str(LOOP), "results", "--json", "--last", "5",
