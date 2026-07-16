@@ -8,14 +8,14 @@ can drive keep/discard without scraping prose. Values are not localized.
 | Token | Where | Meaning |
 |---|---|---|
 | `STATUS` | baseline, score, fork, budget | `keep` \| `discard` \| `crash` \| `fork` \| `budget_exceeded` |
-| `MODE` | baseline, score, budget | Always `mechanical-no-headless` |
-| `SCHEMA_VERSION` | baseline, score, budget | Integer; currently `2` (also in `state.json`) |
-| `OUTPUT_DIR` | baseline, score, budget | Absolute path to results dir |
+| `MODE` | baseline, score, fork, budget | Always `mechanical-no-headless` |
+| `SCHEMA_VERSION` | baseline, score, fork, budget | Integer; currently `2` (also in `state.json`) |
+| `OUTPUT_DIR` | baseline, score, fork, budget | Absolute path to results dir |
 | `EXPERIMENT` | baseline, score, fork | `001`… or `fork-…` id |
 | `PARENT` | baseline, score, fork | Parent experiment id (blank on baseline) |
 | `DECISION` | baseline, score | Metric used for keep/discard this step |
 | `BEST` | baseline, score, fork, budget | Current best decision score |
-| `BEST_EXPERIMENT` | budget | Best experiment id when budget blocks score |
+| `BEST_EXPERIMENT` | fork, budget | Best experiment id (fork parent / when budget blocks) |
 | `DIRECTION` | baseline, score | `higher` or `lower` |
 | `PUBLIC` | baseline, score | Public verify metric |
 | `PRIVATE` | baseline, score | Present only if private verify is configured |
