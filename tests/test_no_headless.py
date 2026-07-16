@@ -65,6 +65,7 @@ class NoHeadlessAutoresearchTests(unittest.TestCase):
                 PYTHON, str(LOOP), "score",
                 "--target", str(target),
                 "--description", "longer candidate",
+                "--lineage", "exploit\nbranch",
             ], work)
             self.assertIn("KEEP", keep.stdout)
             self.assertIn("STATUS=keep", keep.stdout)
@@ -72,6 +73,10 @@ class NoHeadlessAutoresearchTests(unittest.TestCase):
             self.assertIn("BEST=4", keep.stdout)
             self.assertIn("PUBLIC=4", keep.stdout)
             self.assertIn("DIRECTION=higher", keep.stdout)
+            self.assertIn("DESCRIPTION=longer candidate", keep.stdout)
+            # Free-text tokens must stay single-line for KEY=value parsers
+            self.assertIn("LINEAGE=exploit branch", keep.stdout)
+            self.assertNotIn("LINEAGE=exploit\n", keep.stdout)
             self.assertEqual(target.read_text(), "aaaa")
 
             target.write_text("a")

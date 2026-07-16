@@ -19,7 +19,8 @@ can drive keep/discard without scraping prose. Values are not localized.
 | `DIRECTION` | baseline, score, run-verify | `higher` or `lower` (run-verify only if CLI passes `--direction`) |
 | `PUBLIC` | baseline, score, run-verify | Public verify metric |
 | `PRIVATE` | baseline, score, run-verify | Present only if private verify is configured |
-| `LINEAGE` | score, fork | Strategy tag when set |
+| `DESCRIPTION` | baseline, score, fork | Single-line experiment note (tabs/newlines collapsed) |
+| `LINEAGE` | baseline, score, fork | Strategy tag when set (single-line; tabs/newlines collapsed) |
 | `SNAPSHOT` | baseline, score | Path to this experiment’s snapshot |
 | `REVERTED` | baseline, score | `true` if target restored to best; else `false` |
 | `BEST_SNAPSHOT` | score | Present when `REVERTED=true` |

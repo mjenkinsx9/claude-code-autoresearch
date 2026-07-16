@@ -344,6 +344,19 @@ def sanitize_tsv_field(value: Any) -> str:
     return "".join(" " if ch in ("\t", "\n", "\r") else ch for ch in s if ch in ("\t", "\n", "\r") or ord(ch) >= 32).strip()
 
 
+def token_value(value: Any) -> str:
+    """Single-line value for ``KEY=value`` tokens (no CR/LF/TAB)."""
+    return sanitize_tsv_field(value)
+
+
+def print_token(key: str, value: Any) -> None:
+    """Print a machine token; skip empty free-text values."""
+    text = token_value(value)
+    if text == "" and key in {"DESCRIPTION", "LINEAGE"}:
+        return
+    print(f"{key}={text}")
+
+
 def ensure_results_schema(path: Path) -> None:
     """Rewrite results.tsv if its header is missing columns from RESULTS_HEADER.
 
@@ -1065,6 +1078,9 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         print(f"Public score: {format_score(score)} | Private score: {format_score(private_score)}")
     print(f"SNAPSHOT={snapshot}")
     print("REVERTED=false")
+    print_token("DESCRIPTION", args.description or "baseline")
+    if lineage:
+        print_token("LINEAGE", lineage)
     print_budget_tokens(state)
     print(f"Snapshot: {snapshot}")
     return 0
@@ -1270,8 +1286,9 @@ def cmd_score(args: argparse.Namespace) -> int:
     print(f"PUBLIC={format_score(public_score)}")
     if private_cmd:
         print(f"PRIVATE={format_score(private_score)}")
+    print_token("DESCRIPTION", reason)
     if lineage:
-        print(f"LINEAGE={lineage}")
+        print_token("LINEAGE", lineage)
     print(f"SNAPSHOT={snapshot}")
     print(f"REVERTED={'true' if status != 'keep' else 'false'}")
     if status != "keep":
@@ -1564,7 +1581,8 @@ def cmd_fork(args: argparse.Namespace) -> int:
     print(f"BEST={format_score(float(state['best_score']))}")
     print(f"BEST_EXPERIMENT={best_exp:03d}")
     print(f"DIRECTION={state.get('direction', '')}")
-    print(f"LINEAGE={lineage}")
+    print_token("LINEAGE", lineage)
+    print_token("DESCRIPTION", desc)
     print(f"SNAPSHOT={state.get('best_snapshot', '')}")
     print("REVERTED=false")
     print(f"Logged: {fork_id} (status=fork; does not count toward max_experiments)")
