@@ -427,6 +427,39 @@ class IntegrityLoopTests(unittest.TestCase):
             state = json.loads((work / "autoresearch-results" / "state.json").read_text(encoding="utf-8"))
             self.assertEqual(float(state["max_score"]), 99.0)
 
+    def test_negative_max_score_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = self._setup_work(work)
+            blocked = run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--max-score", "-1",
+            ], work, check=False)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("max-score must be >= 0", (blocked.stderr + blocked.stdout).lower())
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--max-score", "10",
+            ], work)
+            target.write_text("aaaa", encoding="utf-8")
+            blocked2 = run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--max-score", "-3",
+                "--allow-config-change",
+                "--description", "bad max",
+            ], work, check=False)
+            self.assertNotEqual(blocked2.returncode, 0)
+            self.assertIn("max-score must be >= 0", (blocked2.stderr + blocked2.stdout).lower())
+
 
 if __name__ == "__main__":
     unittest.main()

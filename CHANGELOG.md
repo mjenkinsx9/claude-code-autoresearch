@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs (README, SKILL, protocol, program-template, security-workflow, tests.md) aligned with budgets, seal, multi-target, and stop rules.
 
 ### Fixed
+- `--max-score` must be finite and `>= 0` (negative known maxima rejected on baseline and sealed score updates).
 - Free-text machine tokens (`DESCRIPTION`, `LINEAGE`) are single-line (tabs/newlines collapsed) so values with whitespace cannot split `KEY=value` parsers.
 - Negative `--max-experiments` / `--max-wall-seconds` are rejected on baseline (they previously stored and immediately tripped `BUDGET_EXCEEDED` on every score).
 - `status --json` / `best --json` coerce `best_score` and experiment ids to numbers (and unlimited budgets to `null`) so stringy legacy `state.json` values do not break harness parsers.

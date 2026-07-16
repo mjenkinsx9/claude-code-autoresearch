@@ -784,6 +784,20 @@ def validate_budget_limits(
             raise SystemExit(f"ERROR: --max-wall-seconds must be >= 0, got {wall_f}")
 
 
+def validate_max_score(max_score: Any) -> None:
+    """Reject negative known maxima (blank/omit means unknown)."""
+    if max_score in (None, ""):
+        return
+    try:
+        value = float(max_score)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"ERROR: --max-score must be a number >= 0, got {max_score!r}") from exc
+    if not math.isfinite(value):
+        raise SystemExit(f"ERROR: --max-score must be finite, got {max_score!r}")
+    if value < 0:
+        raise SystemExit(f"ERROR: --max-score must be >= 0, got {value}")
+
+
 def check_budget(state: dict[str, Any]) -> str | None:
     """Return error message if budget exhausted, else None.
 
@@ -1012,6 +1026,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     max_wall_seconds = getattr(args, "max_wall_seconds", None)
     validate_budget_limits(max_experiments, max_wall_seconds)
     max_score = getattr(args, "max_score", None)
+    validate_max_score(max_score)
     lineage = getattr(args, "lineage", None) or ""
 
     state = {
@@ -1232,6 +1247,7 @@ def cmd_score(args: argparse.Namespace) -> int:
     # Sealed: only update when CLI provided max_score and seal check already passed
     # (identical value is a no-op; change requires --allow-config-change).
     if getattr(args, "max_score", None) is not None:
+        validate_max_score(args.max_score)
         max_score_val = args.max_score
         state["max_score"] = max_score_val
 
