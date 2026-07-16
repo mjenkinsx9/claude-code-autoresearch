@@ -7,18 +7,18 @@ can drive keep/discard without scraping prose. Values are not localized.
 
 | Token | Where | Meaning |
 |---|---|---|
-| `STATUS` | baseline, score, fork, budget | `keep` \| `discard` \| `crash` \| `fork` \| `budget_exceeded` |
-| `MODE` | baseline, score, fork, budget | Always `mechanical-no-headless` |
-| `SCHEMA_VERSION` | baseline, score, fork, budget | Integer; currently `2` (also in `state.json`) |
+| `STATUS` | baseline, score, fork, budget, run-verify | `keep` \| `discard` \| `crash` \| `fork` \| `budget_exceeded` \| `ok` \| `invalid` |
+| `MODE` | baseline, score, fork, budget, run-verify | Always `mechanical-no-headless` |
+| `SCHEMA_VERSION` | baseline, score, fork, budget, run-verify | Integer; currently `2` (also in `state.json`) |
 | `OUTPUT_DIR` | baseline, score, fork, budget | Absolute path to results dir |
 | `EXPERIMENT` | baseline, score, fork | `001`… or `fork-…` id |
 | `PARENT` | baseline, score, fork | Parent experiment id (blank on baseline) |
-| `DECISION` | baseline, score | Metric used for keep/discard this step |
+| `DECISION` | baseline, score, run-verify | Metric used for keep/discard this step (dry-run on run-verify) |
 | `BEST` | baseline, score, fork, budget | Current best decision score |
 | `BEST_EXPERIMENT` | fork, budget | Best experiment id (fork parent / when budget blocks) |
-| `DIRECTION` | baseline, score | `higher` or `lower` |
-| `PUBLIC` | baseline, score | Public verify metric |
-| `PRIVATE` | baseline, score | Present only if private verify is configured |
+| `DIRECTION` | baseline, score, run-verify | `higher` or `lower` (run-verify only if CLI passes `--direction`) |
+| `PUBLIC` | baseline, score, run-verify | Public verify metric |
+| `PRIVATE` | baseline, score, run-verify | Present only if private verify is configured |
 | `LINEAGE` | score, fork | Strategy tag when set |
 | `SNAPSHOT` | baseline, score | Path to this experiment’s snapshot |
 | `REVERTED` | baseline, score | `true` if target restored to best; else `false` |
@@ -34,6 +34,15 @@ can drive keep/discard without scraping prose. Values are not localized.
 | 0 | `keep` or `discard` completed (discard still reverts targets) |
 | 1 | `crash` (verify/private/guard failed; targets reverted) |
 | 2 | `budget_exceeded` (no mutation by helper) |
+
+## Exit codes (`run-verify`)
+
+| Code | Meaning |
+|---|---|
+| 0 | `STATUS=ok` — public (and private/guard if set) metrics parsed |
+| 1 | `STATUS=invalid` — verify/private/guard failed or metric unparseable |
+
+Dry-run only: no snapshots, no `results.tsv` rows, no target mutation.
 
 ## JSON alternatives
 

@@ -1214,7 +1214,11 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 
 def cmd_run_verify(args: argparse.Namespace) -> int:
-    """Dry-run public verify, optional private verify, and optional guard."""
+    """Dry-run public verify, optional private verify, and optional guard.
+
+    Emits the same style of ``KEY=value`` tokens as baseline/score so harnesses
+    can parse dry-runs without scraping prose. Exit 0 = ok, 1 = invalid.
+    """
     args.timeout = resolve_timeout(args)
     metric_name = getattr(args, "metric", None) or None
     metric_regex = args.metric_regex or None
@@ -1223,6 +1227,9 @@ def cmd_run_verify(args: argparse.Namespace) -> int:
     if verify_error:
         print(f"Metric: INVALID ({verify_error})")
         print(verify_result.combined_output[-1000:])
+        print("STATUS=invalid")
+        print(f"MODE={HELPER_MODE}")
+        print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
         return 1
     print(f"Metric: {format_score(score)}")
 
@@ -1234,11 +1241,16 @@ def cmd_run_verify(args: argparse.Namespace) -> int:
         if priv_error:
             print(f"Private metric: INVALID ({priv_error})")
             print(priv_result.combined_output[-1000:])
+            print("STATUS=invalid")
+            print(f"MODE={HELPER_MODE}")
+            print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
+            print(f"PUBLIC={format_score(score)}")
             return 1
         print(f"Private metric: {format_score(private_score)}")
         decision_score = private_score
         print(f"Decision metric: {format_score(decision_score)} (private)")
     else:
+        private_score = None
         print(f"Decision metric: {format_score(decision_score)} (public)")
 
     if args.guard_command:
@@ -1246,7 +1258,26 @@ def cmd_run_verify(args: argparse.Namespace) -> int:
         print(f"Guard exit: {guard_result.returncode if guard_result else 'skipped'}")
         if guard_error:
             print(guard_result.combined_output[-1000:] if guard_result else "")
+            print("STATUS=invalid")
+            print(f"MODE={HELPER_MODE}")
+            print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
+            print(f"PUBLIC={format_score(score)}")
+            if private_cmd:
+                print(f"PRIVATE={format_score(private_score)}")
+            print(f"DECISION={format_score(decision_score)}")
             return 1
+
+    # Success tokens (dry-run only; no snapshot / experiment mutation)
+    print("STATUS=ok")
+    print(f"MODE={HELPER_MODE}")
+    print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
+    print(f"PUBLIC={format_score(score)}")
+    if private_cmd:
+        print(f"PRIVATE={format_score(private_score)}")
+    print(f"DECISION={format_score(decision_score)}")
+    direction = getattr(args, "direction", None)
+    if direction:
+        print(f"DIRECTION={direction}")
     return 0
 
 

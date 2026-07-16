@@ -46,11 +46,26 @@ class PrivateMetricTests(unittest.TestCase):
                 "--verify-command", f"{PYTHON} public.py",
                 "--private-verify-command", f"{PYTHON} private.py",
                 "--metric", "Score",
+                "--direction", "higher",
             ], work)
             self.assertIn("Metric: 0", out.stdout)  # public: no x
             self.assertIn("Private metric: 7", out.stdout)
             self.assertIn("Decision metric: 7", out.stdout)
             self.assertIn("(private)", out.stdout)
+            self.assertIn("STATUS=ok", out.stdout)
+            self.assertIn("PUBLIC=0", out.stdout)
+            self.assertIn("PRIVATE=7", out.stdout)
+            self.assertIn("DECISION=7", out.stdout)
+            self.assertIn("DIRECTION=higher", out.stdout)
+            self.assertIn("MODE=mechanical-no-headless", out.stdout)
+
+            bad = run([
+                PYTHON, str(LOOP), "run-verify",
+                "--verify-command", f"{PYTHON} -c \"raise SystemExit(1)\"",
+                "--metric", "Score",
+            ], work, check=False)
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertIn("STATUS=invalid", bad.stdout)
 
     def test_results_log_decision_score_column(self):
         with tempfile.TemporaryDirectory() as td:
