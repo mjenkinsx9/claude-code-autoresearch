@@ -116,6 +116,19 @@ class DashboardBestScoreTests(unittest.TestCase):
             self.assertTrue(out.is_file())
             self.assertIn("nested-out", out.read_text(encoding="utf-8"))
 
+    def test_results_path_must_be_a_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            not_a_file = work / "not-a-file"
+            not_a_file.mkdir()
+            with self.assertRaises(SystemExit) as ctx:
+                _dash.load_results(str(not_a_file))
+            self.assertIn("not a file", str(ctx.exception).lower())
+            missing = work / "missing.tsv"
+            with self.assertRaises(SystemExit) as ctx2:
+                _dash.load_results(str(missing))
+            self.assertIn("not found", str(ctx2.exception).lower())
+
 
 if __name__ == "__main__":
     unittest.main()

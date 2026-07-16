@@ -25,9 +25,15 @@ def load_results(results_path: str) -> list[dict[str, Any]]:
     path = Path(results_path)
     if not path.exists():
         raise SystemExit(f"Error: results file not found: {results_path}")
+    if not path.is_file():
+        raise SystemExit(f"Error: results path is not a file: {results_path}")
 
     rows: list[dict[str, Any]] = []
-    with path.open(newline="", encoding="utf-8") as fh:
+    try:
+        fh = path.open(newline="", encoding="utf-8")
+    except OSError as exc:
+        raise SystemExit(f"Error: cannot read results file {results_path}: {exc}") from exc
+    with fh:
         reader = csv.DictReader(fh, delimiter="\t")
         for row in reader:
             row = dict(row)
