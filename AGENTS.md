@@ -10,14 +10,14 @@ Do not build workflows around commands such as Claude `-p`, Pi `-p`, or equivale
 
 ## How Autoresearch Should Run
 
-1. The active harness reads the target, goals, and recent `autoresearch-results/results.tsv` rows.
+1. The active harness reads goals, `status --json` / recent `results.tsv` rows, and target files.
 2. The active harness makes exactly one focused change.
 3. Run deterministic helpers:
-   - `python scripts/autoresearch_loop.py baseline ...` to establish the initial metric.
+   - `python scripts/autoresearch_loop.py baseline ...` (`--metric`, optional `--max-experiments`, `--targets`, `--private-verify-command`).
    - `python scripts/autoresearch_loop.py score ...` after each candidate change.
    - `python scripts/eval_engine.py --emit-prompt ...` to prepare binary-eval prompts for the active harness.
-4. Keep, discard, or crash decisions come from helper output.
-5. Failed candidates are reverted by the helper to the best snapshot.
+4. Keep, discard, crash, or `BUDGET_EXCEEDED` (exit 2) come from helper output — do not invent keep/discard.
+5. Failed candidates are reverted by the helper to the best snapshot (multi-file sets included).
 
 ## Development Commands
 
