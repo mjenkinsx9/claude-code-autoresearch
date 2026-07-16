@@ -9,26 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`--metric NAME`** on the loop helper: extract `name: value` / `name = value` (last match wins). Prefer this over the last-number fallback.
-- **Config seal** on `score`: changing verify/guard/metric/direction mid-run requires `--allow-config-change`.
-- **Snapshot sandbox**: revert refuses `best_snapshot` paths outside `output_dir/snapshots/`; stores `best_snapshot_sha256` (optional `--strict-snapshots`).
-- **Directory multi-file snapshots** with `manifest.json` + `--targets`; single-target uses the same layout.
-- **Parent lineage** columns (`parent_experiment`, `lineage`); after discard/crash next parent is best keep; `fork` subcommand.
-- **Budgets**: `--max-experiments` (candidates after baseline), `--max-wall-seconds`; score exits 2 with `BUDGET_EXCEEDED`.
+- **Config seal** on `score`: changing verify/guard/metric/direction/private-verify/**cwd**/**targets** mid-run requires `--allow-config-change`.
+- **Snapshot sandbox**: revert refuses paths outside `snapshots/`; artifact paths cannot escape the bundle; stores `best_snapshot_sha256` with working `--strict-snapshots`.
+- **Directory multi-file snapshots** with `manifest.json` + `--targets`.
+- **Parent lineage** (`parent_experiment`, `lineage`); after discard next parent is best keep; `fork` subcommand.
+- **Budgets**: `--max-experiments`, `--max-wall-seconds` (UTC-aware `created_at`); score exits 2 with `BUDGET_EXCEEDED`.
 - **JSON agent surface**: `status --json`, `results --json`, `best --json`.
-- **Private verify**: `--private-verify-command` drives keep/discard while public score is still logged.
-- **Eval hard-fail**: judgment count/id mismatches fail closed unless `--allow-partial-judgments`; scores are clamped so `total_yes <= max_score`.
-- **Untrusted-output framing** in binary-eval judge prompts (`<UNTRUSTED_OUTPUT>` + ignore-instructions language).
+- **Private verify**: `--private-verify-command` drives keep/discard; dashboard **decision best** uses `best_score` / private, not public spikes.
+- **Eval hard-fail**: overcount, duplicate criterion ids, judgment count ≠ outputs unless `--allow-partial-judgments`; untrusted delimiter neutralization.
 - `references/eval-script-guide.md` and `examples/mechanical/*` frozen-eval samples.
-- Atomic `state.json` writes (`state.json.tmp` + replace); UTF-8 I/O; process-group kill on verify/guard timeout (POSIX).
+- Atomic `state.json` writes; UTF-8 I/O; process-group kill on timeout (POSIX).
 
 ### Changed
-- `--timeout` default is unset so score inherits the baseline timeout (default 120s only when neither CLI nor state set it).
-- Metric regex extraction uses the **last** match when multiple matches exist (metric should be printed near the end of eval output).
-- Architecture SVG documents active-harness + deterministic helpers (no headless backends).
-- Protocol/results-logging aligned with parent lineage, budgets, and helper guard timing.
+- `--timeout` default is unset so score inherits baseline timeout (else 120s).
+- Metric regex uses the **last** match (print metric near end of eval output).
+- Architecture SVG: active harness + deterministic helpers (no headless backends).
+- Docs (README, SKILL, protocol, program-template, security-workflow, tests.md) aligned with budgets, seal, multi-target, and stop rules.
+
+### Fixed
+- Wall-clock budgets no longer false-expire when host is west of UTC (aware UTC timestamps; naive legacy parsed as local).
+- Strict snapshot hash comparison for directory snapshots; multi-target subset no longer silently shrinks sealed scope.
 
 ### Removed
-- Stale `docs/superpowers/` 1.x scratch plan (already claimed removed in 2.0.0).
+- Confirmed absence of stale `docs/superpowers/` scratch plan.
 
 ## [2.0.0] - 2026-06-17
 

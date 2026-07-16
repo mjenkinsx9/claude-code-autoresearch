@@ -9,17 +9,20 @@ Based on [Karpathy's autoresearch](https://github.com/karpathy/autoresearch): co
 
 The important design choice: **the agent runs inside your active harness session.** `autoresearch-agent` does not shell out to paid or limited print/headless model commands. The helper scripts are deterministic only: verification, guard checks, snapshots, keep/discard, scoring, and dashboards.
 
+Architecture overview: [assets/architecture.svg](assets/architecture.svg).
+
 ---
 
 ## What It Does
 
 Give the active agent:
 
-1. a target file or scoped file set,
-2. a measurable metric,
-3. a verify command,
+1. a target file or multi-file set (`--target` / `--targets`),
+2. a measurable metric (`--metric` or `--metric-regex`),
+3. a verify command (optional private/held-out verify),
 4. an optional guard command,
-5. and permission to iterate.
+5. optional budgets (`--max-experiments`, `--max-wall-seconds`),
+6. and permission to iterate.
 
 Then the active harness follows the loop:
 
@@ -65,7 +68,7 @@ cp -R autoresearch-agent/* ~/.hermes/skills/autoresearch/
 
 ## Quick Start: Mechanical Metric
 
-1. Establish a baseline:
+1. Establish a baseline (prefer a **named** metric and a mechanical budget):
 
 ```bash
 python scripts/autoresearch_loop.py baseline \
@@ -73,10 +76,13 @@ python scripts/autoresearch_loop.py baseline \
   --verify-command './score.sh' \
   --metric Score \
   --direction higher \
-  --guard-command 'npm test'
+  --guard-command 'npm test' \
+  --max-experiments 10
 ```
 
-Prefer `--metric Score` (parses the last `Score: <number>` line) over a bare last-number fallback. Use `--metric-regex` when you need a custom pattern.
+Prefer `--metric Score` (parses the last `Score: <number>` line) over a bare last-number fallback. Use `--metric-regex` when you need a custom pattern. Print the metric **last**; put progress on stderr.
+
+`--max-experiments` counts **candidate** scores after baseline. When exhausted, `score` exits **2** with `BUDGET_EXCEEDED` and does not mutate targets. Optional: `--max-wall-seconds`.
 
 2. Ask the active harness to run autoresearch:
 
@@ -99,7 +105,46 @@ python scripts/autoresearch_loop.py score \
   --description 'short description of the one change'
 ```
 
-The helper keeps improvements, reverts regressions to the best snapshot, and appends `autoresearch-results/results.tsv`. Mid-run changes to verify/guard/metric/direction require `--allow-config-change`.
+The helper keeps improvements, reverts regressions to the best snapshot, and appends `autoresearch-results/results.tsv`. Mid-run changes to sealed fields (verify/guard/metric/direction/private-verify/cwd/targets) require `--allow-config-change`.
+
+Machine-readable status:
+
+```bash
+python scripts/autoresearch_loop.py status --json
+python scripts/autoresearch_loop.py results --json --last 10
+python scripts/autoresearch_loop.py best --json
+```
+
+---
+
+## Quick Start: Multi-target + private metric
+
+```bash
+# Snapshot/revert several files together
+python scripts/autoresearch_loop.py baseline \
+  --targets features.py model.py \
+  --verify-command 'python evaluate.py' \
+  --metric Score \
+  --direction higher \
+  --max-experiments 20
+
+# Optional held-out decision metric (keep/discard uses private; public still logged)
+python scripts/autoresearch_loop.py baseline \
+  --target prompt.md \
+  --verify-command 'python eval_public.py' \
+  --private-verify-command 'python eval_private.py' \
+  --metric Score \
+  --direction higher
+```
+
+After a discard, the next experiment’s parent is the **best keep** (not the failed id). Fork without resealing metrics:
+
+```bash
+python scripts/autoresearch_loop.py fork \
+  --output-dir ./autoresearch-results/ \
+  --lineage explore-alt \
+  --description 'try a different strategy from best'
+```
 
 ---
 
@@ -125,16 +170,20 @@ python scripts/eval_engine.py \
   --results-file ./autoresearch-results/eval-results.json
 ```
 
+Judgments hard-fail on overcount, duplicate criterion ids, or judgment count ≠ outputs unless `--allow-partial-judgments`. Outputs are wrapped as untrusted data in the judge prompt.
+
 ---
 
 ## Helper Scripts
 
 | Script | Purpose | Calls an LLM? |
 |---|---|---|
-| `scripts/autoresearch_loop.py` | Mechanical verify/guard/snapshot/keep-discard; budgets; lineage; multi-target; private verify; JSON status | No |
+| `scripts/autoresearch_loop.py` | Mechanical verify/guard/snapshot/keep-discard; budgets; lineage; multi-target; private verify; JSON status; fork | No |
 | `scripts/eval_engine.py` | Emits binary-eval judge prompts and scores supplied judgments | No |
-| `scripts/generate_dashboard.py` | Builds an HTML dashboard from `results.tsv` | No |
+| `scripts/generate_dashboard.py` | Builds an HTML dashboard from `results.tsv` (decision best, not public spikes) | No |
 | `scripts/agent_cli.py` | Compatibility notice for the removed headless adapter | No |
+
+Subcommands on the loop helper: `baseline`, `score`, `run-verify`, `status`, `results`, `best`, `fork`.
 
 See `references/eval-script-guide.md` and `examples/mechanical/` for frozen-eval patterns.
 
@@ -144,13 +193,14 @@ See `references/eval-script-guide.md` and `examples/mechanical/` for frozen-eval
 
 ```text
 autoresearch-results/
-├── state.json                     # current best score/snapshot
-├── results.tsv                    # experiment log
-├── snapshots/                     # kept/discarded/crashed candidate files
+├── state.json                     # best score/snapshot, sealed config, budgets
+├── results.tsv                    # experiment log (parent, lineage, private_score)
+├── snapshots/                     # experiment_NNN_status/ + manifest.json
 └── runs/
     └── experiment_002/
-        ├── verify.txt             # verify command output
-        └── guard.txt              # guard command output, if configured
+        ├── verify.txt
+        ├── private_verify.txt     # if private verify configured
+        └── guard.txt
 ```
 
 Generate a dashboard:
@@ -171,6 +221,8 @@ python scripts/generate_dashboard.py \
 | **program.md** | Human strategy, constraints, scope, and success notes | Human / active agent during setup |
 | **eval.json** | Binary criteria and test prompts for harness-judged evals | Fixed during a run |
 
+Keep **evaluate.py** frozen when possible — the agent should not rewrite the scorer.
+
 ---
 
 ## Critical Rules
@@ -184,6 +236,7 @@ python scripts/generate_dashboard.py \
 | 5 | **Guard regressions** | A metric can improve while behavior breaks. |
 | 6 | **Automatic rollback** | Worse, crashed, or guard-failing candidates revert to the best snapshot. |
 | 7 | **Preserve the log** | `results.tsv` is the research map for future agents. |
+| 8 | **Stop on budgets / stop rules** | Prefer `--max-experiments` / `--max-wall-seconds`; do not ignore production/secrets stop rules. |
 
 ---
 
@@ -205,14 +258,21 @@ autoresearch-agent/
 ├── AGENTS.md
 ├── CHANGELOG.md
 ├── SKILL.md
+├── assets/
+│   └── architecture.svg
 ├── examples/
 │   ├── code-optimization.json
 │   ├── prompt-optimization.json
-│   └── skill-optimization.json
+│   ├── skill-optimization.json
+│   └── mechanical/
+│       ├── hello-length/
+│       ├── constrained-compress/
+│       └── multitarget-api/
 ├── references/
 │   ├── autonomous-loop-protocol.md
 │   ├── core-principles.md
 │   ├── eval-criteria-guide.md
+│   ├── eval-script-guide.md
 │   ├── plan-workflow.md
 │   ├── program-template.md
 │   ├── results-logging.md
@@ -222,6 +282,7 @@ autoresearch-agent/
 │   ├── autoresearch_loop.py
 │   ├── eval_engine.py
 │   └── generate_dashboard.py
+├── tests/
 └── tests.md
 ```
 

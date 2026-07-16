@@ -191,6 +191,30 @@ class IntegrityLoopTests(unittest.TestCase):
             state2 = json.loads((work / "autoresearch-results" / "state.json").read_text(encoding="utf-8"))
             self.assertEqual(state2["timeout"], 90)
 
+    def test_cwd_change_requires_allow_config_change(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            other = work / "other"
+            other.mkdir()
+            target = self._setup_work(work)
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--cwd", str(work),
+            ], work)
+            blocked = run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--cwd", str(other),
+                "--description", "cwd change",
+            ], work, check=False)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("cwd", (blocked.stderr + blocked.stdout).lower())
+            self.assertIn("allow-config-change", (blocked.stderr + blocked.stdout).lower())
+
 
 if __name__ == "__main__":
     unittest.main()

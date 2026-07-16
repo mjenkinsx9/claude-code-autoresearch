@@ -570,14 +570,14 @@ def _cli_config_overrides(args: argparse.Namespace, state: dict[str, Any]) -> li
     if priv is not None and (priv or "") != (state.get("private_verify_command") or ""):
         changes.append("private_verify_command")
     if args.cwd is not None:
-        state_cwd = state.get("cwd") or ""
-        if str(Path(args.cwd).resolve()) != str(Path(state_cwd).resolve() if state_cwd else Path.cwd().resolve()):
-            # Compare resolved; empty state cwd means baseline used cwd at that time
-            if state_cwd:
-                if str(Path(args.cwd).resolve()) != str(Path(state_cwd).resolve()):
-                    changes.append("cwd")
-            elif str(Path(args.cwd).resolve()) != str(Path.cwd().resolve()):
-                changes.append("cwd")
+        state_cwd = (state.get("cwd") or "").strip()
+        cli_cwd = str(Path(args.cwd).resolve())
+        sealed_cwd = str(Path(state_cwd).resolve()) if state_cwd else ""
+        if sealed_cwd and cli_cwd != sealed_cwd:
+            changes.append("cwd")
+        elif not sealed_cwd and cli_cwd != str(Path.cwd().resolve()):
+            # Baseline stored empty only if cwd was default; still seal non-default CLI cwd
+            changes.append("cwd")
     return changes
 
 

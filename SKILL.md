@@ -22,10 +22,10 @@ The active harness session is the agent. Do **not** spawn another model through 
 
 Helper scripts are deterministic only:
 
-- `scripts/autoresearch_loop.py` runs verify/guard commands, snapshots files, logs results, and reverts regressions.
-- `scripts/eval_engine.py` emits judge prompts and scores JSON judgments supplied by the active harness.
-- `scripts/generate_dashboard.py` renders `results.tsv`.
-- `scripts/agent_cli.py` is only a compatibility notice; legacy headless invocation is disabled.
+- `scripts/autoresearch_loop.py` — `baseline` / `score` / `run-verify` / `status` / `results` / `best` / `fork`
+- `scripts/eval_engine.py` — emit judge prompts and score harness-supplied JSON judgments
+- `scripts/generate_dashboard.py` — HTML from `results.tsv` (decision best, not public spikes)
+- `scripts/agent_cli.py` — compatibility notice; legacy headless invocation is disabled
 
 ## When to Use
 
@@ -95,16 +95,19 @@ python scripts/autoresearch_loop.py baseline \
   --verify-command './score.sh' \
   --metric Score \
   --direction higher \
-  --guard-command 'npm test'
+  --guard-command 'npm test' \
+  --max-experiments 10
 ```
 
-Prefer `--metric NAME` so the helper extracts the last `NAME: value` line. Use `--metric-regex` for custom patterns. Changing sealed verify/guard/metric/direction on later `score` runs requires `--allow-config-change`.
+Prefer `--metric NAME` so the helper extracts the last `NAME: value` line. Use `--metric-regex` for custom patterns.
+
+**Sealed fields** (mid-run change requires `--allow-config-change`): verify, private-verify, guard, metric, metric-regex, direction, cwd, targets.
 
 ## Core Loop Protocol
 
 For each experiment:
 
-1. Read the current target, `autoresearch-results/state.json`, and recent `results.tsv` rows.
+1. Prefer `status --json` + last TSV rows (context diet); re-read targets after rollbacks.
 2. Pick exactly one focused change.
 3. Apply only that change.
 4. Run scoring:
@@ -116,11 +119,35 @@ For each experiment:
    ```
 
 5. Interpret result:
-   - `KEEP` means the candidate improved the metric or tied with a simpler target.
-   - `DISCARD` means the helper reverted the target to the best snapshot.
-   - `CRASH` means verify/guard failed and the helper reverted the target.
-6. Append observations to the run log if useful.
-7. Repeat until bounded count reached, user interrupts, or a stop rule triggers.
+   - `KEEP` — decision metric improved, or exact tie with **smaller total target bytes**.
+   - `DISCARD` — helper reverted to best snapshot; next parent is best keep.
+   - `CRASH` — verify/guard/private-verify failed; helper reverted.
+   - Exit code **2** + `BUDGET_EXCEEDED` — stop; do not keep editing.
+6. Append observations if useful.
+7. Repeat until budget exhausted, user interrupts, or a stop rule triggers.
+
+## Advanced Helper Surface
+
+| Feature | How |
+|---|---|
+| Multi-file targets | `--targets a.py b.py` (snapshotted/reverted together; sealed) |
+| Private / holdout metric | `--private-verify-command '...'` — **decision** score; public still logged |
+| Budgets | `--max-experiments N`, `--max-wall-seconds S` at baseline |
+| JSON for harnesses | `status --json`, `results --json --last N`, `best --json` |
+| Fork from best | `fork --lineage name` (does not reseal verify/metric) |
+| Strict snapshots | `--strict-snapshots` on score — fail closed on hash mismatch |
+| Instructions | `--instructions path-or-text` stored in state for the harness to re-read |
+
+Multi-target example:
+
+```bash
+python scripts/autoresearch_loop.py baseline \
+  --targets features.py model.py \
+  --verify-command 'python evaluate.py' \
+  --metric Score \
+  --direction higher \
+  --max-experiments 20
+```
 
 ## Mechanical Eval Mode
 
@@ -225,7 +252,10 @@ Stop and report instead of continuing when:
 - The same failure mode repeats five times
 - The next improvement requires changing unapproved files
 - The target touches production or secrets unexpectedly
-- The bounded experiment count is reached
+- Mechanical budget exhausted (`BUDGET_EXCEEDED` / exit 2)
+- The harness-bounded experiment count is reached
+
+Do **not** treat “never stop” as absolute — budgets and safety stop rules win.
 
 ## Common Pitfalls
 
@@ -239,11 +269,17 @@ Stop and report instead of continuing when:
    - Fix: let `autoresearch_loop.py score` do keep/discard and rollback.
 5. Running a model CLI as a subprocess.
    - Fix: keep all agent work in the active harness session.
+6. Letting the agent edit `evaluate.py`.
+   - Fix: freeze the scorer; only mutate the target.
+7. Expecting prose “Max experiments: 10” without `--max-experiments`.
+   - Fix: set budgets on baseline for mechanical enforcement.
 
 ## Verification Checklist
 
-- [ ] `python scripts/autoresearch_loop.py --help` shows `baseline`, `score`, and `run-verify`
+- [ ] `python scripts/autoresearch_loop.py --help` shows `baseline`, `score`, `run-verify`, `status`, `results`, `best`, `fork`
+- [ ] `baseline --help` includes `--metric`, `--max-experiments`, `--targets`, `--private-verify-command`
+- [ ] `score --help` includes `--allow-config-change`, `--strict-snapshots`
 - [ ] `python scripts/eval_engine.py --help` does not require an agent backend
-- [ ] Mechanical baseline and score smoke tests pass
+- [ ] `python3 -m pytest tests/ -q` passes
 - [ ] Binary eval can emit a prompt and score supplied judgments
 - [ ] `scripts/agent_cli.py` reports that headless invocation is disabled

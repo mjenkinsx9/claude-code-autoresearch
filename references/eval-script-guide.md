@@ -80,6 +80,7 @@ Keep/discard uses the **private** score when configured; both are logged.
 
 ## See also
 
-- `examples/mechanical/hello-length/` — minimal length metric
-- `examples/mechanical/constrained-compress/` — quality-floor penalty
+- `examples/mechanical/hello-length/` — minimal length metric + score loop
+- `examples/mechanical/constrained-compress/` — quality-floor penalty (minimize)
+- `examples/mechanical/multitarget-api/` — frozen evaluate.py + `--targets features.py model.py`
 - `references/eval-criteria-guide.md` — binary (harness-judged) criteria

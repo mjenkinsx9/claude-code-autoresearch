@@ -76,7 +76,7 @@ Primary memory for the loop is mechanical:
 
 Git commits on disposable branches remain useful for human review, but the helper reverts via snapshots, not `git reset`.
 
-**Apply:** Let `score` snapshot and revert. Read recent TSV rows + best score each iteration. Use git optionally for shared-branch workflow.
+**Apply:** Let `score` snapshot and revert. Read recent TSV rows + best score each iteration (`status --json`). Prefer mechanical budgets. Use git optionally for shared-branch workflow. Parent lineage after discard points at the best keep so the search tree stays honest.
 
 ## 7. Honest Limitations
 
