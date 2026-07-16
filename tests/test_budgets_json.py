@@ -136,7 +136,7 @@ class BudgetsJsonTests(unittest.TestCase):
                 "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
                 encoding="utf-8",
             )
-            run([
+            base = run([
                 PYTHON, str(LOOP), "baseline",
                 "--target", str(target),
                 "--verify-command", f"{PYTHON} score.py target.txt",
@@ -144,12 +144,18 @@ class BudgetsJsonTests(unittest.TestCase):
                 "--direction", "higher",
                 "--max-experiments", "1",
             ], work)
+            self.assertIn("CANDIDATES_DONE=0", base.stdout)
+            self.assertIn("CANDIDATES_REMAINING=1", base.stdout)
             target.write_text("aaaa", encoding="utf-8")
-            run([
+            scored = run([
                 PYTHON, str(LOOP), "score",
                 "--target", str(target),
                 "--description", "only allowed candidate",
             ], work)
+            # Successful score also emits budget tokens (not only budget_exceeded)
+            self.assertIn("STATUS=keep", scored.stdout)
+            self.assertIn("CANDIDATES_DONE=1", scored.stdout)
+            self.assertIn("CANDIDATES_REMAINING=0", scored.stdout)
             before = target.read_text(encoding="utf-8")
             target.write_text("aaaaa", encoding="utf-8")
             blocked = run([

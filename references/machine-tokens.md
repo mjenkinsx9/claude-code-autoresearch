@@ -23,9 +23,9 @@ can drive keep/discard without scraping prose. Values are not localized.
 | `SNAPSHOT` | baseline, score | Path to this experiment’s snapshot |
 | `REVERTED` | baseline, score | `true` if target restored to best; else `false` |
 | `BEST_SNAPSHOT` | score | Present when `REVERTED=true` |
-| `CANDIDATES_DONE` | budget | Count of post-baseline scores already run |
-| `CANDIDATES_REMAINING` | budget | Remaining candidate slots (if capped) |
-| `WALL_REMAINING_SECONDS` | budget | Remaining wall budget (if capped) |
+| `CANDIDATES_DONE` | baseline, score, budget | Count of post-baseline scores already run (always printed) |
+| `CANDIDATES_REMAINING` | baseline, score, budget | Remaining candidate slots (only when `--max-experiments` set) |
+| `WALL_REMAINING_SECONDS` | baseline, score, budget | Remaining wall budget (only when `--max-wall-seconds` set) |
 
 ## Exit codes (`score`)
 
@@ -56,4 +56,6 @@ DIRECTION=higher
 PUBLIC=4
 SNAPSHOT=/path/to/snapshots/experiment_002_keep
 REVERTED=false
+CANDIDATES_DONE=1
+CANDIDATES_REMAINING=4
 ```

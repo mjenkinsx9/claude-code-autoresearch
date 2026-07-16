@@ -730,6 +730,20 @@ def budget_progress(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def print_budget_tokens(state: dict[str, Any]) -> None:
+    """Emit budget progress KEY=value lines for harness stop checks.
+
+    Always prints ``CANDIDATES_DONE``. Remaining/wall tokens appear only when
+    those caps were set on baseline (same surface as ``STATUS=budget_exceeded``).
+    """
+    progress = budget_progress(state)
+    print(f"CANDIDATES_DONE={progress['candidates_done']}")
+    if progress["candidates_remaining"] is not None:
+        print(f"CANDIDATES_REMAINING={progress['candidates_remaining']}")
+    if progress["wall_remaining_seconds"] is not None:
+        print(f"WALL_REMAINING_SECONDS={progress['wall_remaining_seconds']:.1f}")
+
+
 def state_public_dict(state: dict[str, Any]) -> dict[str, Any]:
     targets = state.get("targets") or ([state["target"]] if state.get("target") else [])
     progress = budget_progress(state)
@@ -889,6 +903,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         print(f"Public score: {format_score(score)} | Private score: {format_score(private_score)}")
     print(f"SNAPSHOT={snapshot}")
     print("REVERTED=false")
+    print_budget_tokens(state)
     print(f"Snapshot: {snapshot}")
     return 0
 
@@ -907,12 +922,7 @@ def cmd_score(args: argparse.Namespace) -> int:
         print(f"OUTPUT_DIR={output_dir}")
         print(f"BEST={format_score(float(state.get('best_score', 0)))}")
         print(f"BEST_EXPERIMENT={int(state.get('best_experiment', 1)):03d}")
-        progress = budget_progress(state)
-        print(f"CANDIDATES_DONE={progress['candidates_done']}")
-        if progress["candidates_remaining"] is not None:
-            print(f"CANDIDATES_REMAINING={progress['candidates_remaining']}")
-        if progress["wall_remaining_seconds"] is not None:
-            print(f"WALL_REMAINING_SECONDS={progress['wall_remaining_seconds']:.1f}")
+        print_budget_tokens(state)
         return BUDGET_EXIT_CODE
 
     allowed = Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve()
@@ -1103,6 +1113,7 @@ def cmd_score(args: argparse.Namespace) -> int:
     print(f"REVERTED={'true' if status != 'keep' else 'false'}")
     if status != "keep":
         print(f"BEST_SNAPSHOT={state['best_snapshot']}")
+    print_budget_tokens(state)
     print(
         f"Score: {format_score(public_score)} | Decision: {format_score(decision_score)} | "
         f"Best: {format_score(float(state['best_score']))} | Direction: {direction} | Parent: {parent_id:03d}"
