@@ -841,6 +841,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         "lineage": lineage,
     })
     print(f"Baseline recorded: {format_score(decision_score)} ({args.direction} is better)")
+    print("STATUS=keep")
     if private_cmd:
         print(f"Public score: {format_score(score)} | Private score: {format_score(private_score)}")
     print(f"Snapshot: {snapshot}")
@@ -1024,6 +1025,8 @@ def cmd_score(args: argparse.Namespace) -> int:
     })
 
     print(f"Experiment {experiment:03d}: {status.upper()}")
+    # Machine-parseable single token for harness scripts (do not localize)
+    print(f"STATUS={status}")
     print(
         f"Score: {format_score(public_score)} | Decision: {format_score(decision_score)} | "
         f"Best: {format_score(float(state['best_score']))} | Direction: {direction} | Parent: {parent_id:03d}"
@@ -1033,6 +1036,7 @@ def cmd_score(args: argparse.Namespace) -> int:
     print(f"Snapshot: {snapshot}")
     if status != "keep":
         print(f"Reverted targets to best snapshot: {state['best_snapshot']}")
+    # Exit codes: 0 keep|discard, 1 crash, 2 budget (checked earlier)
     return 0 if status != "crash" else 1
 
 

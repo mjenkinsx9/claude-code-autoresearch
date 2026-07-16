@@ -60,6 +60,7 @@ class NoHeadlessAutoresearchTests(unittest.TestCase):
                 "--description", "longer candidate",
             ], work)
             self.assertIn("KEEP", keep.stdout)
+            self.assertIn("STATUS=keep", keep.stdout)
             self.assertEqual(target.read_text(), "aaaa")
 
             target.write_text("a")
@@ -69,6 +70,7 @@ class NoHeadlessAutoresearchTests(unittest.TestCase):
                 "--description", "shorter regression",
             ], work)
             self.assertIn("DISCARD", discard.stdout)
+            self.assertIn("STATUS=discard", discard.stdout)
             self.assertEqual(target.read_text(), "aaaa")
 
             rows = (work / "autoresearch-results" / "results.tsv").read_text()

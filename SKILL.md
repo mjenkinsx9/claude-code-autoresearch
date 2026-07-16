@@ -118,11 +118,11 @@ For each experiment:
      --description 'short description of this one change'
    ```
 
-5. Interpret result:
+5. Interpret result (also parse `STATUS=keep|discard|crash` on stdout):
    - `KEEP` — decision metric improved, or exact tie with **smaller total target bytes**.
    - `DISCARD` — helper reverted to best snapshot; next parent is best keep.
    - `CRASH` — verify/guard/private-verify failed; helper reverted.
-   - Exit code **2** + `BUDGET_EXCEEDED` — stop; do not keep editing.
+   - Exit codes: **0** keep/discard, **1** crash, **2** `BUDGET_EXCEEDED` (stop; do not keep editing).
 6. Append observations if useful.
 7. Repeat until budget exhausted, user interrupts, or a stop rule triggers.
 
