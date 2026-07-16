@@ -74,6 +74,26 @@ class DashboardBestScoreTests(unittest.TestCase):
         self.assertEqual(direction, "lower")
         self.assertEqual(best, 4.0)
 
+    def test_chart_path_starts_after_null_score_rows(self):
+        """Fork rows lack decision scores; chart must moveTo first numeric point, not i===0."""
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "results.tsv"
+            path.write_text(
+                "experiment\tscore\tmax_score\tbest_score\tprivate_score\tdecision_score\tstatus\t"
+                "description\ttimestamp\tdirection\tverify_command\tguard_command\t"
+                "snapshot\tparent_experiment\tlineage\n"
+                "001\t3\t\t3\t\t3\tkeep\tbaseline\t2026-07-16T00:00:00+00:00\thigher\t\t\t\t\t\n"
+                "fork-1\t\t\t3\t\t\tfork\tfork marker\t2026-07-16T00:01:00+00:00\thigher\t\t\t\t001\texplore\n"
+                "002\t5\t\t5\t\t5\tkeep\timprove\t2026-07-16T00:02:00+00:00\thigher\t\t\t\t001\texplore\n",
+                encoding="utf-8",
+            )
+            rows = _dash.load_results(str(path))
+            html = _dash.generate_html(rows, "fork-chart")
+            self.assertIn("pathStarted", html)
+            self.assertNotIn("if (i === 0) ctx.moveTo", html)
+            self.assertIn('"status": "fork"', html)
+            self.assertIn('"score": null', html)
+
 
 if __name__ == "__main__":
     unittest.main()

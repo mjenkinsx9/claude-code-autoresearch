@@ -184,18 +184,24 @@ if (scores.length) {{
   ctx.strokeStyle = '#4f46e5';
   ctx.lineWidth = 2;
   ctx.beginPath();
+  let pathStarted = false;
   data.forEach((d, i) => {{
     if (typeof d.score !== 'number') return;
     const x = pad + (i / Math.max(1, data.length - 1)) * (w - pad * 2);
     const y = h - pad - ((d.score - min) / Math.max(1e-9, max - min)) * (h - pad * 2);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    // Do not use i===0: fork/crash rows with null scores can precede the first point
+    if (!pathStarted) {{ ctx.moveTo(x, y); pathStarted = true; }}
+    else {{ ctx.lineTo(x, y); }}
   }});
   ctx.stroke();
   data.forEach((d, i) => {{
     if (typeof d.score !== 'number') return;
     const x = pad + (i / Math.max(1, data.length - 1)) * (w - pad * 2);
     const y = h - pad - ((d.score - min) / Math.max(1e-9, max - min)) * (h - pad * 2);
-    ctx.fillStyle = d.status === 'keep' ? '#22c55e' : d.status === 'crash' ? '#f97316' : '#ef4444';
+    ctx.fillStyle = d.status === 'keep' ? '#22c55e'
+      : d.status === 'crash' ? '#f97316'
+      : d.status === 'fork' ? '#60a5fa'
+      : '#ef4444';
     ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
   }});
   ctx.fillStyle = '#cbd5e1';
