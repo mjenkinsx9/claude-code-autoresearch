@@ -208,11 +208,13 @@ Load only when needed:
 |---|---|
 | `references/autonomous-loop-protocol.md` | Running the core loop |
 | `references/plan-workflow.md` | Planning a run |
-| `references/security-workflow.md` | Security audit mode |
+| `references/security-workflow.md` | Security audit mode (harness conventions, not CLI product) |
 | `references/core-principles.md` | Reviewing the principles |
 | `references/results-logging.md` | Managing `results.tsv` |
+| `references/eval-script-guide.md` | Writing frozen mechanical evaluate scripts |
 | `references/eval-criteria-guide.md` | Writing binary criteria |
 | `references/program-template.md` | Creating `program.md` |
+| `examples/mechanical/` | Minimal mechanical metric examples |
 
 ## Stop Rules
 

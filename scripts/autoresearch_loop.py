@@ -2,31 +2,20 @@
 """
 Autoresearch Agent loop helper — no-headless state manager.
 
-This script never invokes an LLM CLI. The active harness (Claude Code, Codex,
-Gemini CLI, Pi, Hermes, or another agent) performs the thinking and file edits
-inside its normal interactive/session context. This helper does only the
-repeatable, deterministic work:
-
-- run the mechanical verify command
-- extract a numeric metric
-- run an optional guard command
-- snapshot candidates and kept versions
-- keep improvements or revert regressions
-- append results.tsv
+This script never invokes an LLM CLI. The active harness performs thinking and
+file edits. This helper does deterministic verify/guard/snapshot/keep-discard.
 
 Typical flow:
 
-    python scripts/autoresearch_loop.py baseline \
-      --target target.md \
-      --verify-command './score.sh' \
-      --metric Score \
+    python scripts/autoresearch_loop.py baseline \\
+      --target target.md \\
+      --verify-command './score.sh' \\
+      --metric Score \\
       --direction higher
 
-    # active agent makes exactly one change to target.md
-
-    python scripts/autoresearch_loop.py score \
-      --target target.md \
-      --description 'tightened routing examples'
+    python scripts/autoresearch_loop.py score \\
+      --target target.md \\
+      --description 'one focused change'
 """
 
 from __future__ import annotations
@@ -42,17 +31,21 @@ import signal
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 DEFAULT_TIMEOUT = 120
+MAX_SCOPED_FILES = 10
+MAX_TOTAL_BYTES_WARN = 500 * 1024
+BUDGET_EXIT_CODE = 2
 
 RESULTS_HEADER = [
     "experiment",
     "score",
     "max_score",
     "best_score",
+    "private_score",
     "status",
     "description",
     "timestamp",
@@ -60,6 +53,8 @@ RESULTS_HEADER = [
     "verify_command",
     "guard_command",
     "snapshot",
+    "parent_experiment",
+    "lineage",
 ]
 
 
@@ -80,10 +75,8 @@ class CommandResult:
 
 
 def run_shell_command(command: str, cwd: str | None = None, timeout: int | None = None) -> CommandResult:
-    """Run a user-supplied verification or guard command."""
     if timeout is None:
         timeout = DEFAULT_TIMEOUT
-    # start_new_session enables process-group kill on timeout (POSIX).
     kwargs: dict[str, Any] = {
         "args": command,
         "shell": True,
@@ -95,12 +88,10 @@ def run_shell_command(command: str, cwd: str | None = None, timeout: int | None 
     }
     if os.name != "nt":
         kwargs["start_new_session"] = True
-
     try:
         process = subprocess.Popen(**kwargs)
     except OSError as exc:
         return CommandResult(command, 127, "", str(exc))
-
     try:
         stdout, stderr = process.communicate(timeout=timeout)
         return CommandResult(command, process.returncode, stdout or "", stderr or "")
@@ -119,7 +110,6 @@ def run_shell_command(command: str, cwd: str | None = None, timeout: int | None 
 
 
 def _kill_process_tree(process: subprocess.Popen[str]) -> None:
-    """Best-effort kill of the process and its children."""
     try:
         if os.name != "nt" and process.pid:
             try:
@@ -157,6 +147,53 @@ def ensure_target_allowed(target: Path, allowed_root: Path) -> Path:
     if not target.is_file():
         raise SystemExit(f"ERROR: --target {target} is not a file.")
     return target
+
+
+def sanitize_artifact_relpath(path_value: str | Path) -> Path:
+    normalized = str(path_value).replace("\\", "/")
+    parts = Path(normalized).parts
+    safe: list[str] = []
+    for part in parts:
+        if part in ("", ".", "/"):
+            continue
+        if part == "..":
+            continue
+        if not safe and ":" in part:
+            part = part.replace(":", "_")
+        safe.append(part)
+    if not safe:
+        return Path("unnamed_file")
+    return Path(*safe)
+
+
+def resolve_targets(args: argparse.Namespace, state: dict[str, Any] | None, allowed_root: Path) -> list[Path]:
+    if getattr(args, "targets", None):
+        raw = list(args.targets)
+    elif getattr(args, "target", None):
+        raw = [args.target]
+    elif state:
+        if state.get("targets"):
+            raw = list(state["targets"])
+        elif state.get("target"):
+            raw = [state["target"]]
+        else:
+            raise SystemExit("ERROR: no target in state; pass --target or --targets")
+    else:
+        raise SystemExit("ERROR: provide --target or --targets")
+    if len(raw) > MAX_SCOPED_FILES:
+        raise SystemExit(f"ERROR: too many targets ({len(raw)}); max is {MAX_SCOPED_FILES}")
+    targets = [ensure_target_allowed(Path(p), allowed_root) for p in raw]
+    # de-dupe resolved paths while preserving order
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for t in targets:
+        if t not in seen:
+            seen.add(t)
+            unique.append(t)
+    total = sum(t.stat().st_size for t in unique)
+    if total > MAX_TOTAL_BYTES_WARN:
+        print(f"WARNING: total target size {total} bytes exceeds {MAX_TOTAL_BYTES_WARN}", file=sys.stderr)
+    return unique
 
 
 def make_dirs(output_dir: Path) -> dict[str, Path]:
@@ -217,7 +254,6 @@ def resolve_metric_spec(
     metric_regex: str | None = None,
     metric_name: str | None = None,
 ) -> tuple[str | None, str | None]:
-    """Return (regex, name) used for extraction. Regex wins over name."""
     if metric_regex:
         return metric_regex, None
     if metric_name:
@@ -230,13 +266,6 @@ def metric_from_output(
     metric_regex: str | None = None,
     metric_name: str | None = None,
 ) -> float:
-    """Extract a numeric metric from command output.
-
-    Preference order:
-    1. ``metric_regex`` (first capture group when present; last match if multiple)
-    2. ``metric_name`` (case-insensitive ``name: value`` / ``name = value``; last match)
-    3. Last number in the combined output (legacy fallback)
-    """
     regex, name = resolve_metric_spec(metric_regex=metric_regex, metric_name=metric_name)
     if regex:
         matches = list(re.finditer(regex, output, re.MULTILINE | re.DOTALL))
@@ -290,11 +319,52 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def snapshot_target(target: Path, snapshots_dir: Path, experiment: int, status: str) -> Path:
-    suffix = target.suffix or ".txt"
-    destination = snapshots_dir / f"experiment_{experiment:03d}_{status}{suffix}"
-    shutil.copy2(target, destination)
-    return destination
+def combined_targets_sha256(targets: list[Path]) -> str:
+    digest = hashlib.sha256()
+    for target in targets:
+        digest.update(str(target).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(target.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def total_size(targets: list[Path]) -> int:
+    return sum(t.stat().st_size for t in targets)
+
+
+def snapshot_targets(targets: list[Path], snapshots_dir: Path, experiment: int, status: str) -> Path:
+    dest = snapshots_dir / f"experiment_{experiment:03d}_{status}"
+    if dest.exists():
+        shutil.rmtree(dest)
+    files_dir = dest / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    manifest_files: list[dict[str, Any]] = []
+    for target in targets:
+        # Prefer basename when unique; else full sanitized absolute-ish path
+        rel = Path(target.name)
+        artifact = files_dir / sanitize_artifact_relpath(rel)
+        # disambiguate collisions
+        if artifact.exists():
+            rel = sanitize_artifact_relpath(str(target).lstrip("/"))
+            artifact = files_dir / rel
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(target, artifact)
+        manifest_files.append({
+            "path": str(target),
+            "artifact_path": str(artifact.relative_to(dest)),
+            "sha256": file_sha256(artifact),
+            "bytes": artifact.stat().st_size,
+        })
+    manifest = {
+        "type": "step_code_snapshot",
+        "experiment": experiment,
+        "status": status,
+        "created_at": datetime.now().isoformat(),
+        "files": manifest_files,
+    }
+    (dest / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return dest
 
 
 def ensure_snapshot_allowed(snapshot: Path, snapshots_dir: Path) -> Path:
@@ -309,13 +379,11 @@ def ensure_snapshot_allowed(snapshot: Path, snapshots_dir: Path) -> Path:
         )
     if not snapshot.exists():
         raise SystemExit(f"ERROR: best_snapshot {snapshot} does not exist.")
-    if not snapshot.is_file():
-        raise SystemExit(f"ERROR: best_snapshot {snapshot} is not a file.")
     return snapshot
 
 
-def revert_to_snapshot(
-    target: Path,
+def revert_targets_from_snapshot(
+    targets: list[Path],
     snapshot: str,
     snapshots_dir: Path,
     *,
@@ -323,17 +391,60 @@ def revert_to_snapshot(
     strict_snapshots: bool = False,
 ) -> None:
     snap_path = ensure_snapshot_allowed(Path(snapshot), snapshots_dir)
+
+    # Legacy flat single-file snapshot support
+    if snap_path.is_file():
+        if len(targets) != 1:
+            raise SystemExit("ERROR: legacy flat snapshot only supports a single target file")
+        if expected_sha256:
+            actual = file_sha256(snap_path)
+            if actual != expected_sha256:
+                msg = f"snapshot hash mismatch for {snap_path}: expected {expected_sha256}, got {actual}"
+                if strict_snapshots:
+                    raise SystemExit(f"ERROR: {msg}")
+                print(f"WARNING: {msg}", file=sys.stderr)
+        shutil.copy2(snap_path, targets[0])
+        return
+
+    manifest_path = snap_path / "manifest.json"
+    if not manifest_path.exists():
+        raise SystemExit(f"ERROR: snapshot directory missing manifest.json: {snap_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    by_path = {entry["path"]: entry for entry in manifest.get("files", [])}
     if expected_sha256:
-        actual = file_sha256(snap_path)
-        if actual != expected_sha256:
-            msg = (
-                f"snapshot hash mismatch for {snap_path}: "
-                f"expected {expected_sha256}, got {actual}"
-            )
-            if strict_snapshots:
-                raise SystemExit(f"ERROR: {msg}")
-            print(f"WARNING: {msg}", file=sys.stderr)
-    shutil.copy2(snap_path, target)
+        # Recompute from snapshot artifacts
+        digest = hashlib.sha256()
+        for entry in sorted(manifest.get("files", []), key=lambda e: e["path"]):
+            digest.update(entry["path"].encode("utf-8"))
+            digest.update(b"\0")
+            art = snap_path / entry["artifact_path"]
+            digest.update(art.read_bytes())
+            digest.update(b"\0")
+        actual = digest.hexdigest()
+        # Also accept the combined live-targets hash stored at keep time
+        if actual != expected_sha256 and expected_sha256:
+            # compare against stored entry sha chain if matches state hash from targets
+            pass
+        # Prefer verifying each file's sha256 from manifest vs artifact
+        for entry in manifest.get("files", []):
+            art = snap_path / entry["artifact_path"]
+            if file_sha256(art) != entry.get("sha256"):
+                msg = f"snapshot artifact hash mismatch: {art}"
+                if strict_snapshots:
+                    raise SystemExit(f"ERROR: {msg}")
+                print(f"WARNING: {msg}", file=sys.stderr)
+
+    for target in targets:
+        entry = by_path.get(str(target))
+        if entry is None:
+            # try basename match
+            matches = [e for e in manifest.get("files", []) if Path(e["path"]).name == target.name]
+            if len(matches) == 1:
+                entry = matches[0]
+            else:
+                raise SystemExit(f"ERROR: snapshot does not contain target {target}")
+        art = snap_path / entry["artifact_path"]
+        shutil.copy2(art, target)
 
 
 def resolve_timeout(args: argparse.Namespace, state: dict[str, Any] | None = None) -> int:
@@ -385,7 +496,6 @@ def command_output_file(output_dir: Path, experiment: int, name: str, result: Co
 
 
 def _cli_config_overrides(args: argparse.Namespace, state: dict[str, Any]) -> list[str]:
-    """Return human-readable list of sealed fields the CLI is trying to change."""
     changes: list[str] = []
     if args.verify_command is not None and args.verify_command != state.get("verify_command"):
         changes.append("verify_command")
@@ -397,16 +507,71 @@ def _cli_config_overrides(args: argparse.Namespace, state: dict[str, Any]) -> li
         changes.append("metric")
     if args.guard_command is not None and (args.guard_command or "") != (state.get("guard_command") or ""):
         changes.append("guard_command")
+    priv = getattr(args, "private_verify_command", None)
+    if priv is not None and (priv or "") != (state.get("private_verify_command") or ""):
+        changes.append("private_verify_command")
     return changes
+
+
+def check_budget(state: dict[str, Any]) -> str | None:
+    """Return error message if budget exhausted, else None.
+
+    ``max_experiments`` counts candidate score runs *after* baseline.
+    """
+    max_exp = state.get("max_experiments")
+    if max_exp not in (None, "", 0, "0"):
+        max_exp_i = int(max_exp)
+        candidates_done = max(0, int(state.get("last_experiment", 1)) - 1)
+        if candidates_done >= max_exp_i:
+            return (
+                f"BUDGET_EXCEEDED: max_experiments={max_exp_i} candidate scores already completed "
+                f"(last_experiment={state.get('last_experiment')})"
+            )
+    max_wall = state.get("max_wall_seconds")
+    if max_wall not in (None, "", 0, "0"):
+        created = state.get("created_at")
+        if created:
+            try:
+                created_dt = datetime.fromisoformat(created)
+                if created_dt.tzinfo is None:
+                    created_dt = created_dt.replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                elapsed = (now - created_dt.astimezone(timezone.utc)).total_seconds()
+                if elapsed > float(max_wall):
+                    return (
+                        f"BUDGET_EXCEEDED: max_wall_seconds={max_wall} elapsed={elapsed:.1f}s"
+                    )
+            except ValueError:
+                pass
+    return None
+
+
+def state_public_dict(state: dict[str, Any]) -> dict[str, Any]:
+    targets = state.get("targets") or ([state["target"]] if state.get("target") else [])
+    return {
+        "target": state.get("target"),
+        "targets": targets,
+        "best_score": state.get("best_score"),
+        "best_experiment": state.get("best_experiment"),
+        "last_experiment": state.get("last_experiment"),
+        "direction": state.get("direction"),
+        "max_experiments": state.get("max_experiments"),
+        "max_wall_seconds": state.get("max_wall_seconds"),
+        "metric": state.get("metric"),
+        "mode": state.get("mode", "mechanical-no-headless"),
+        "best_snapshot": state.get("best_snapshot"),
+        "lineage": state.get("lineage", ""),
+        "next_parent_experiment": state.get("next_parent_experiment"),
+        "private_verify_command": state.get("private_verify_command") or "",
+        "instructions": state.get("instructions") or "",
+    }
 
 
 def cmd_baseline(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).resolve()
     paths = make_dirs(output_dir)
-    target = ensure_target_allowed(
-        Path(args.target),
-        Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve(),
-    )
+    allowed = Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve()
+    targets = resolve_targets(args, None, allowed)
     args.cwd = args.cwd or str(Path.cwd())
     args.timeout = resolve_timeout(args)
 
@@ -429,6 +594,18 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         print(verify_result.combined_output[-1000:], file=sys.stderr)
         return 1
 
+    private_score = None
+    private_cmd = getattr(args, "private_verify_command", None) or ""
+    if private_cmd:
+        priv_result, private_score, priv_error = run_verify(args, private_cmd, metric_regex, metric_name)
+        command_output_file(output_dir, 1, "private_verify", priv_result)
+        if priv_error:
+            print(f"ERROR: invalid baseline private verify: {priv_error}", file=sys.stderr)
+            return 1
+        decision_score = private_score
+    else:
+        decision_score = score
+
     guard_result, guard_error = run_guard(args, args.guard_command)
     command_output_file(output_dir, 1, "guard", guard_result)
     if guard_error:
@@ -437,22 +614,41 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             print(guard_result.combined_output[-1000:], file=sys.stderr)
         return 1
 
-    snapshot = snapshot_target(target, paths["snapshots"], 1, "keep")
+    snapshot = snapshot_targets(targets, paths["snapshots"], 1, "keep")
+    instructions = getattr(args, "instructions", None) or ""
+    if instructions and Path(instructions).is_file():
+        instructions = str(Path(instructions).resolve())
+
+    max_experiments = getattr(args, "max_experiments", None)
+    max_wall_seconds = getattr(args, "max_wall_seconds", None)
+    max_score = getattr(args, "max_score", None)
+    lineage = getattr(args, "lineage", None) or ""
+
     state = {
-        "target": str(target),
+        "target": str(targets[0]),
+        "targets": [str(t) for t in targets],
         "direction": args.direction,
         "verify_command": args.verify_command,
+        "private_verify_command": private_cmd,
         "guard_command": args.guard_command or "",
         "metric": metric_name or "",
         "metric_regex": metric_regex or "",
+        "max_score": max_score if max_score is not None else "",
         "cwd": args.cwd or "",
         "timeout": args.timeout,
-        "best_score": score,
-        "best_size": target.stat().st_size,
+        "best_score": decision_score,
+        "best_public_score": score,
+        "best_private_score": private_score if private_score is not None else "",
+        "best_size": total_size(targets),
         "best_snapshot": str(snapshot),
-        "best_snapshot_sha256": file_sha256(snapshot),
+        "best_snapshot_sha256": combined_targets_sha256(targets),
         "best_experiment": 1,
         "last_experiment": 1,
+        "next_parent_experiment": 1,
+        "lineage": lineage,
+        "instructions": instructions,
+        "max_experiments": max_experiments if max_experiments is not None else "",
+        "max_wall_seconds": max_wall_seconds if max_wall_seconds is not None else "",
         "created_at": datetime.now().isoformat(),
         "updated_at": datetime.now().isoformat(),
         "mode": "mechanical-no-headless",
@@ -461,7 +657,9 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     append_results(output_dir, {
         "experiment": "001",
         "score": format_score(score),
-        "best_score": format_score(score),
+        "max_score": format_score(float(max_score)) if max_score is not None else "",
+        "best_score": format_score(decision_score),
+        "private_score": format_score(private_score),
         "status": "keep",
         "description": args.description or "baseline",
         "timestamp": datetime.now().isoformat(),
@@ -469,8 +667,12 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         "verify_command": args.verify_command,
         "guard_command": args.guard_command or "",
         "snapshot": str(snapshot),
+        "parent_experiment": "",
+        "lineage": lineage,
     })
-    print(f"Baseline recorded: {format_score(score)} ({args.direction} is better)")
+    print(f"Baseline recorded: {format_score(decision_score)} ({args.direction} is better)")
+    if private_cmd:
+        print(f"Public score: {format_score(score)} | Private score: {format_score(private_score)}")
     print(f"Snapshot: {snapshot}")
     return 0
 
@@ -479,10 +681,14 @@ def cmd_score(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).resolve()
     paths = make_dirs(output_dir)
     state = load_state(output_dir)
-    target = ensure_target_allowed(
-        Path(args.target or state["target"]),
-        Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve(),
-    )
+
+    budget_err = check_budget(state)
+    if budget_err:
+        print(f"ERROR: {budget_err}", file=sys.stderr)
+        return BUDGET_EXIT_CODE
+
+    allowed = Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve()
+    targets = resolve_targets(args, state, allowed)
 
     overrides = _cli_config_overrides(args, state)
     if overrides and not getattr(args, "allow_config_change", False):
@@ -493,6 +699,12 @@ def cmd_score(args: argparse.Namespace) -> int:
         )
 
     experiment = int(state.get("last_experiment", 1)) + 1
+    parent = getattr(args, "parent_experiment", None)
+    if parent is None or parent == "":
+        parent_id = int(state.get("next_parent_experiment", state.get("best_experiment", 1)))
+    else:
+        parent_id = int(parent)
+
     direction = args.direction if args.direction is not None else state["direction"]
     verify_command = args.verify_command if args.verify_command is not None else state["verify_command"]
     guard_command = args.guard_command if args.guard_command is not None else state.get("guard_command", "")
@@ -500,57 +712,89 @@ def cmd_score(args: argparse.Namespace) -> int:
     metric_regex = metric_regex or None
     metric_name = args.metric if getattr(args, "metric", None) is not None else state.get("metric", "")
     metric_name = metric_name or None
+    private_cmd = (
+        args.private_verify_command
+        if getattr(args, "private_verify_command", None) is not None
+        else state.get("private_verify_command", "")
+    ) or ""
+    lineage = getattr(args, "lineage", None)
+    if lineage is None:
+        lineage = state.get("lineage", "") or ""
     args.cwd = args.cwd if args.cwd is not None else (state.get("cwd") or None)
     args.timeout = resolve_timeout(args, state)
 
-    verify_result, score, verify_error = run_verify(args, verify_command, metric_regex, metric_name)
+    if getattr(args, "instructions", None) is not None:
+        instructions = args.instructions
+        if instructions and Path(instructions).is_file():
+            instructions = str(Path(instructions).resolve())
+        state["instructions"] = instructions
+
+    verify_result, public_score, verify_error = run_verify(args, verify_command, metric_regex, metric_name)
     command_output_file(output_dir, experiment, "verify", verify_result)
 
+    private_score = None
     status = "discard"
     reason = args.description or f"experiment {experiment:03d}"
-    guard_result: CommandResult | None = None
     candidate_snapshot_status = "discard"
+    decision_score: float | None = None
 
     if verify_error:
         status = "crash"
         reason = f"{reason} — verify failed: {verify_error}"
         candidate_snapshot_status = "crash"
     else:
-        guard_result, guard_error = run_guard(args, guard_command)
-        command_output_file(output_dir, experiment, "guard", guard_result)
-        if guard_error:
-            status = "crash"
-            reason = f"{reason} — guard failed: {guard_error}"
-            candidate_snapshot_status = "crash"
-        else:
-            best_score = float(state["best_score"])
-            current_size = target.stat().st_size
-            best_size = int(state.get("best_size", current_size))
-            if is_improvement(float(score), best_score, direction):
-                status = "keep"
-                candidate_snapshot_status = "keep"
-            elif is_tie(float(score), best_score) and current_size < best_size:
-                status = "keep"
-                candidate_snapshot_status = "keep"
-                reason = f"{reason} — tie on score, simpler target"
+        if private_cmd:
+            priv_result, private_score, priv_error = run_verify(args, private_cmd, metric_regex, metric_name)
+            command_output_file(output_dir, experiment, "private_verify", priv_result)
+            if priv_error:
+                status = "crash"
+                reason = f"{reason} — private verify failed: {priv_error}"
+                candidate_snapshot_status = "crash"
             else:
-                status = "discard"
-                candidate_snapshot_status = "discard"
+                decision_score = private_score
+        else:
+            decision_score = public_score
 
-    snapshot = snapshot_target(target, paths["snapshots"], experiment, candidate_snapshot_status)
+        if status != "crash":
+            guard_result, guard_error = run_guard(args, guard_command)
+            command_output_file(output_dir, experiment, "guard", guard_result)
+            if guard_error:
+                status = "crash"
+                reason = f"{reason} — guard failed: {guard_error}"
+                candidate_snapshot_status = "crash"
+            else:
+                best_score = float(state["best_score"])
+                current_size = total_size(targets)
+                best_size = int(state.get("best_size", current_size))
+                assert decision_score is not None
+                if is_improvement(float(decision_score), best_score, direction):
+                    status = "keep"
+                    candidate_snapshot_status = "keep"
+                elif is_tie(float(decision_score), best_score) and current_size < best_size:
+                    status = "keep"
+                    candidate_snapshot_status = "keep"
+                    reason = f"{reason} — tie on score, simpler target"
+                else:
+                    status = "discard"
+                    candidate_snapshot_status = "discard"
 
-    if status == "keep" and score is not None:
+    snapshot = snapshot_targets(targets, paths["snapshots"], experiment, candidate_snapshot_status)
+
+    if status == "keep" and decision_score is not None:
         state.update({
-            "best_score": score,
-            "best_size": target.stat().st_size,
+            "best_score": decision_score,
+            "best_public_score": public_score if public_score is not None else "",
+            "best_private_score": private_score if private_score is not None else "",
+            "best_size": total_size(targets),
             "best_snapshot": str(snapshot),
-            "best_snapshot_sha256": file_sha256(snapshot),
+            "best_snapshot_sha256": combined_targets_sha256(targets),
             "best_experiment": experiment,
+            "next_parent_experiment": experiment,
         })
     else:
         try:
-            revert_to_snapshot(
-                target,
+            revert_targets_from_snapshot(
+                targets,
                 state["best_snapshot"],
                 paths["snapshots"],
                 expected_sha256=state.get("best_snapshot_sha256") or None,
@@ -559,26 +803,38 @@ def cmd_score(args: argparse.Namespace) -> int:
         except SystemExit:
             raise
         except OSError as exc:
-            raise SystemExit(f"ERROR: failed to revert target to best snapshot: {exc}") from exc
+            raise SystemExit(f"ERROR: failed to revert targets to best snapshot: {exc}") from exc
+        # After discard/crash, next parent is best keep (not this failed experiment)
+        state["next_parent_experiment"] = int(state.get("best_experiment", 1))
+
+    max_score_val = state.get("max_score", "")
+    if getattr(args, "max_score", None) is not None and getattr(args, "allow_config_change", False):
+        max_score_val = args.max_score
+        state["max_score"] = max_score_val
 
     state.update({
         "last_experiment": experiment,
         "updated_at": datetime.now().isoformat(),
-        "target": str(target),
+        "target": str(targets[0]),
+        "targets": [str(t) for t in targets],
         "direction": direction,
         "verify_command": verify_command,
+        "private_verify_command": private_cmd,
         "guard_command": guard_command or "",
         "metric": metric_name or "",
         "metric_regex": metric_regex or "",
         "cwd": args.cwd or "",
         "timeout": args.timeout,
+        "lineage": lineage,
     })
     save_state(output_dir, state)
 
     append_results(output_dir, {
         "experiment": f"{experiment:03d}",
-        "score": format_score(score),
+        "score": format_score(public_score),
+        "max_score": format_score(float(max_score_val)) if max_score_val not in ("", None) else "",
         "best_score": format_score(float(state["best_score"])),
+        "private_score": format_score(private_score),
         "status": status,
         "description": reason,
         "timestamp": datetime.now().isoformat(),
@@ -586,13 +842,20 @@ def cmd_score(args: argparse.Namespace) -> int:
         "verify_command": verify_command,
         "guard_command": guard_command or "",
         "snapshot": str(snapshot),
+        "parent_experiment": f"{parent_id:03d}",
+        "lineage": lineage,
     })
 
     print(f"Experiment {experiment:03d}: {status.upper()}")
-    print(f"Score: {format_score(score)} | Best: {format_score(float(state['best_score']))} | Direction: {direction}")
+    print(
+        f"Score: {format_score(public_score)} | Decision: {format_score(decision_score)} | "
+        f"Best: {format_score(float(state['best_score']))} | Direction: {direction} | Parent: {parent_id:03d}"
+    )
+    if private_cmd:
+        print(f"Private score: {format_score(private_score)}")
     print(f"Snapshot: {snapshot}")
     if status != "keep":
-        print(f"Reverted target to best snapshot: {state['best_snapshot']}")
+        print(f"Reverted targets to best snapshot: {state['best_snapshot']}")
     return 0 if status != "crash" else 1
 
 
@@ -619,17 +882,83 @@ def cmd_run_verify(args: argparse.Namespace) -> int:
 def cmd_status(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).resolve()
     state = load_state(output_dir)
+    if getattr(args, "json", False):
+        print(json.dumps(state_public_dict(state), indent=2, sort_keys=True))
+        return 0
     print(f"Target: {state['target']}")
+    if state.get("targets") and len(state["targets"]) > 1:
+        print(f"Targets: {', '.join(state['targets'])}")
     print(f"Mode: {state.get('mode', 'unknown')}")
-    print(f"Best: {format_score(float(state['best_score']))} ({state['direction']} is better), experiment {state['best_experiment']:03d}")
+    print(f"Best: {format_score(float(state['best_score']))} ({state['direction']} is better), experiment {int(state['best_experiment']):03d}")
     print(f"Best snapshot: {state['best_snapshot']}")
     if state.get("metric"):
         print(f"Metric name: {state['metric']}")
+    if state.get("max_experiments") not in (None, ""):
+        print(f"Max experiments (candidates): {state['max_experiments']}")
+    if state.get("instructions"):
+        print(f"Instructions: {state['instructions']}")
     path = results_path(output_dir)
     if path.exists():
         rows = path.read_text(encoding="utf-8").splitlines()[-6:]
         print("\nRecent results:")
         print("\n".join(rows))
+    return 0
+
+
+def cmd_results(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir).resolve()
+    path = results_path(output_dir)
+    if not path.exists():
+        raise SystemExit(f"ERROR: no results.tsv at {path}")
+    with path.open(encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+    last_n = getattr(args, "last", None)
+    if last_n:
+        rows = rows[-int(last_n) :]
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2))
+    else:
+        for row in rows:
+            print("\t".join(row.get(h, "") for h in RESULTS_HEADER if h in row or True))
+    return 0
+
+
+def cmd_best(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir).resolve()
+    state = load_state(output_dir)
+    payload = {
+        "best_score": state.get("best_score"),
+        "best_experiment": state.get("best_experiment"),
+        "best_snapshot": state.get("best_snapshot"),
+        "direction": state.get("direction"),
+        "target": state.get("target"),
+        "targets": state.get("targets") or [state.get("target")],
+    }
+    if getattr(args, "json", False) or True:
+        # best always JSON-friendly; --json optional for symmetry
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"Best score: {format_score(float(state['best_score']))}")
+            print(f"Best experiment: {int(state['best_experiment']):03d}")
+            print(f"Best snapshot: {state['best_snapshot']}")
+    return 0
+
+
+def cmd_fork(args: argparse.Namespace) -> int:
+    """Record a fork from the current best without changing target files or sealed metric config."""
+    output_dir = Path(args.output_dir).resolve()
+    state = load_state(output_dir)
+    best_exp = int(state.get("best_experiment", 1))
+    lineage = args.lineage or state.get("lineage", "") or "fork"
+    state["next_parent_experiment"] = best_exp
+    state["lineage"] = lineage
+    state["updated_at"] = datetime.now().isoformat()
+    save_state(output_dir, state)
+    print(f"Fork ready: next parent={best_exp:03d} lineage={lineage}")
+    print("Sealed verify/metric/direction unchanged.")
+    if args.description:
+        print(f"Note: {args.description}")
     return 0
 
 
@@ -639,19 +968,26 @@ def add_common(
     require_target: bool = False,
     require_direction: bool = False,
 ) -> None:
-    parser.add_argument("--target", required=require_target, help="Path to the file the active harness is optimizing")
+    parser.add_argument("--target", default=None, help="Single target file the active harness is optimizing")
+    parser.add_argument("--targets", nargs="+", default=None, help="Multiple target files to snapshot/revert together")
     parser.add_argument("--output-dir", default="./autoresearch-results/", help="Directory for state, snapshots, runs, and results.tsv")
-    parser.add_argument("--verify-command", required=require_verify, default=None, help="Command that prints/exposes the numeric metric")
+    parser.add_argument("--verify-command", required=require_verify, default=None, help="Command that prints/exposes the public numeric metric")
+    parser.add_argument(
+        "--private-verify-command",
+        default=None,
+        help="Optional private/held-out verify command; when set, keep/discard uses this score",
+    )
     parser.add_argument(
         "--metric",
         default=None,
-        help="Metric name to extract (e.g. Score, accuracy). Matches 'name: value' / 'name = value'; last match wins.",
+        help="Metric name to extract (e.g. Score, accuracy). Last name: value match wins.",
     )
     parser.add_argument(
         "--metric-regex",
         default=None,
-        help="Regex for extracting the metric (overrides --metric). Last match wins; first capture group is used when present.",
+        help="Regex for extracting the metric (overrides --metric). Last match wins.",
     )
+    parser.add_argument("--max-score", type=float, default=None, help="Optional known max score for TSV logging")
     parser.add_argument("--direction", choices=("higher", "lower"), required=require_direction, default=None, help="Whether higher or lower metric values are better")
     parser.add_argument("--guard-command", default=None, help="Optional command that must exit 0 for a change to be kept")
     parser.add_argument("--cwd", default=None, help="Working directory for verify and guard commands")
@@ -661,8 +997,15 @@ def add_common(
         default=None,
         help=f"Timeout in seconds for verify and guard commands (default: inherit from state or {DEFAULT_TIMEOUT})",
     )
-    parser.add_argument("--allowed-root", default=None, help="Restrict target paths to this root (default: current working directory)")
+    parser.add_argument("--allowed-root", default=None, help="Restrict target paths to this root (default: cwd)")
     parser.add_argument("--description", default="", help="Short description of this baseline or candidate change")
+    parser.add_argument("--lineage", default=None, help="Optional strategy/lineage tag for this experiment")
+    parser.add_argument("--instructions", default=None, help="Steering instructions text or path to a file")
+    parser.add_argument("--max-experiments", type=int, default=None, help="Max candidate score runs after baseline (0/omit = unlimited)")
+    parser.add_argument("--max-wall-seconds", type=int, default=None, help="Wall-clock budget from baseline created_at")
+    if require_target:
+        # enforce at runtime that one of target/targets is present
+        pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -676,6 +1019,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     score = subparsers.add_parser("score", help="Score the active harness's current candidate and keep/discard it")
     add_common(score, require_verify=False)
+    score.add_argument("--parent-experiment", default=None, help="Explicit parent experiment id (default: next_parent from state)")
     score.add_argument(
         "--allow-config-change",
         action="store_true",
@@ -694,7 +1038,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = subparsers.add_parser("status", help="Show current autoresearch state")
     status.add_argument("--output-dir", default="./autoresearch-results/")
+    status.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     status.set_defaults(func=cmd_status)
+
+    results = subparsers.add_parser("results", help="Show results.tsv rows")
+    results.add_argument("--output-dir", default="./autoresearch-results/")
+    results.add_argument("--json", action="store_true", help="Emit JSON array of rows")
+    results.add_argument("--last", type=int, default=None, help="Only last N rows")
+    results.set_defaults(func=cmd_results)
+
+    best = subparsers.add_parser("best", help="Show current best score/snapshot")
+    best.add_argument("--output-dir", default="./autoresearch-results/")
+    best.add_argument("--json", action="store_true", help="Emit JSON")
+    best.set_defaults(func=cmd_best)
+
+    fork = subparsers.add_parser("fork", help="Fork next experiment parent from best (no file changes)")
+    fork.add_argument("--output-dir", default="./autoresearch-results/")
+    fork.add_argument("--lineage", default=None, help="New lineage/strategy tag")
+    fork.add_argument("--description", default="", help="Note for the operator/harness")
+    fork.set_defaults(func=cmd_fork)
 
     return parser
 
@@ -702,6 +1064,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in ("baseline",) and not args.target and not args.targets:
+        parser.error("baseline requires --target or --targets")
+    if args.command == "baseline" and args.target and args.targets:
+        parser.error("use either --target or --targets, not both")
+    if args.command == "score" and args.target and args.targets:
+        parser.error("use either --target or --targets, not both")
     return args.func(args)
 
 

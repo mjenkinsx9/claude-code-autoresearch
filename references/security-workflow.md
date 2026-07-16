@@ -311,7 +311,9 @@ This incentivizes the loop to cover ALL categories before going deep on any one.
 
 ## Flags & Modes
 
-### `--diff` — Delta Mode
+> **Important:** The flags below are **conventions for the active harness** (how to scope a prose-driven security audit), not subcommands of `scripts/autoresearch_loop.py`. There is no `autoresearch-security` CLI binary in this package.
+
+### `--diff` — Delta Mode (harness convention)
 
 Only audit files changed since the last audit.
 

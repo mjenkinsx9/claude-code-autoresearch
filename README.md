@@ -131,10 +131,12 @@ python scripts/eval_engine.py \
 
 | Script | Purpose | Calls an LLM? |
 |---|---|---|
-| `scripts/autoresearch_loop.py` | Mechanical verify/guard/snapshot/keep-discard state manager | No |
+| `scripts/autoresearch_loop.py` | Mechanical verify/guard/snapshot/keep-discard; budgets; lineage; multi-target; private verify; JSON status | No |
 | `scripts/eval_engine.py` | Emits binary-eval judge prompts and scores supplied judgments | No |
 | `scripts/generate_dashboard.py` | Builds an HTML dashboard from `results.tsv` | No |
 | `scripts/agent_cli.py` | Compatibility notice for the removed headless adapter | No |
+
+See `references/eval-script-guide.md` and `examples/mechanical/` for frozen-eval patterns.
 
 ---
 

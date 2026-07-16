@@ -67,15 +67,16 @@ Software: 10-second test -> 360 experiments/hour.
 
 **Apply:** Minimize iteration cost. Use fast tests, incremental builds, targeted verification. Every minute saved = more experiments run.
 
-## 6. Git as Memory and Audit Trail
+## 6. Snapshots + results.tsv as Memory (git optional)
 
-Every successful change is committed. This enables:
-- **Causality tracking** — which change drove improvement?
-- **Stacking wins** — each commit builds on prior successes
-- **Pattern learning** — agent sees what worked in THIS codebase
-- **Human review** — researcher inspects agent's decision sequence
+Primary memory for the loop is mechanical:
+- **`state.json`** — best score, best snapshot path, sealed verify/metric, budgets
+- **`snapshots/`** — kept/discarded candidates (multi-file manifests supported)
+- **`results.tsv`** — experiment log with parent lineage
 
-**Apply:** Commit before verify. Revert on failure. Agent reads its own git history to inform next experiment.
+Git commits on disposable branches remain useful for human review, but the helper reverts via snapshots, not `git reset`.
+
+**Apply:** Let `score` snapshot and revert. Read recent TSV rows + best score each iteration. Use git optionally for shared-branch workflow.
 
 ## 7. Honest Limitations
 

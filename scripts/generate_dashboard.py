@@ -27,7 +27,7 @@ def load_results(results_path: str) -> list[dict[str, Any]]:
         raise SystemExit(f"Error: results file not found: {results_path}")
 
     rows: list[dict[str, Any]] = []
-    with path.open(newline="") as fh:
+    with path.open(newline="", encoding="utf-8") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
         for row in reader:
             row = dict(row)
@@ -67,9 +67,12 @@ def generate_html(results: list[dict[str, Any]], title: str) -> str:
         rows.append(
             "<tr>"
             f"<td>{html.escape(row.get('experiment', ''))}</td>"
+            f"<td>{html.escape(row.get('parent_experiment', '') or '')}</td>"
             f"<td><span class='status {status}'>{status}</span></td>"
             f"<td>{html.escape(row.get('score', ''))}</td>"
+            f"<td>{html.escape(row.get('private_score', '') or '')}</td>"
             f"<td>{html.escape(row.get('best_score', ''))}</td>"
+            f"<td>{html.escape(row.get('lineage', '') or '')}</td>"
             f"<td>{html.escape(row.get('description', ''))}</td>"
             f"<td>{html.escape(row.get('timestamp', ''))}</td>"
             "</tr>"
@@ -116,7 +119,7 @@ canvas {{ width: 100%; max-height: 320px; background: #0b0c18; border-radius: 8p
 <div class="card"><canvas id="chart" width="1000" height="320"></canvas></div>
 <div class="card">
 <table>
-<thead><tr><th>Experiment</th><th>Status</th><th>Score</th><th>Best</th><th>Description</th><th>Timestamp</th></tr></thead>
+<thead><tr><th>Experiment</th><th>Parent</th><th>Status</th><th>Score</th><th>Private</th><th>Best</th><th>Lineage</th><th>Description</th><th>Timestamp</th></tr></thead>
 <tbody>{''.join(rows)}</tbody>
 </table>
 </div>
@@ -169,12 +172,14 @@ def main() -> int:
 
     results = load_results(args.results)
     output = generate_html(results, args.title)
-    Path(args.output).write_text(output)
+    Path(args.output).write_text(output, encoding="utf-8")
     print(f"Dashboard written to {args.output}")
     if results:
+        direction = (results[-1].get("direction") or "higher")
         non_crash = [r["score_num"] for r in results if r.get("status") != "crash" and r.get("score_num") is not None]
         if non_crash:
-            print(f"Best score: {max(non_crash)}")
+            best = max(non_crash) if direction == "higher" else min(non_crash)
+            print(f"Best score: {best} ({direction} is better)")
     return 0
 
 
