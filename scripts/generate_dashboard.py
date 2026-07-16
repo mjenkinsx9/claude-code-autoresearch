@@ -89,6 +89,13 @@ def generate_html(results: list[dict[str, Any]], title: str) -> str:
     rows = []
     for row in results:
         status = html.escape(row.get("status", ""))
+        if row.get("decision_score"):
+            decision_disp = str(row.get("decision_score", ""))
+        elif row.get("decision_score_num") is not None:
+            d = float(row["decision_score_num"])
+            decision_disp = str(int(d)) if d.is_integer() else f"{d:.6g}"
+        else:
+            decision_disp = ""
         rows.append(
             "<tr>"
             f"<td>{html.escape(row.get('experiment', ''))}</td>"
@@ -96,6 +103,7 @@ def generate_html(results: list[dict[str, Any]], title: str) -> str:
             f"<td><span class='status {status}'>{status}</span></td>"
             f"<td>{html.escape(row.get('score', ''))}</td>"
             f"<td>{html.escape(row.get('private_score', '') or '')}</td>"
+            f"<td>{html.escape(str(decision_disp))}</td>"
             f"<td>{html.escape(row.get('best_score', ''))}</td>"
             f"<td>{html.escape(row.get('lineage', '') or '')}</td>"
             f"<td>{html.escape(row.get('description', ''))}</td>"
@@ -156,7 +164,7 @@ canvas {{ width: 100%; max-height: 320px; background: #0b0c18; border-radius: 8p
 <p class="note">Chart plots decision score (private when configured; otherwise public).</p></div>
 <div class="card">
 <table>
-<thead><tr><th>Experiment</th><th>Parent</th><th>Status</th><th>Score</th><th>Private</th><th>Best</th><th>Lineage</th><th>Description</th><th>Timestamp</th></tr></thead>
+<thead><tr><th>Experiment</th><th>Parent</th><th>Status</th><th>Score</th><th>Private</th><th>Decision</th><th>Best</th><th>Lineage</th><th>Description</th><th>Timestamp</th></tr></thead>
 <tbody>{''.join(rows)}</tbody>
 </table>
 </div>

@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Plain `status` prints budget progress (`Budget: N/M candidates used`) plus lineage/next parent.
 - `status` / `status --json` report wall-clock `wall_elapsed_seconds` / `wall_remaining_seconds` when `--max-wall-seconds` is set.
 - Pytest smokes `examples/mechanical/hello-length`, `constrained-compress`, and `multitarget-api` through the real loop helper.
-- `results.tsv` **`decision_score`** column: metric used for keep/discard (private when configured).
+- `results.tsv` **`decision_score`** column: metric used for keep/discard (private when configured); dashboard table shows a Decision column.
 - `baseline --force` rotates `results.tsv` to `results.prev.<timestamp>.tsv` so experiment ids restart without duplicate rows.
 
 ### Removed

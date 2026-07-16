@@ -39,6 +39,9 @@ class DashboardBestScoreTests(unittest.TestCase):
             # Headline stat card uses decision best (9), not discarded public 99
             self.assertIn('<div class="stat">9</div>', html)
             self.assertNotIn('<div class="stat">99</div>', html)
+            self.assertIn("<th>Decision</th>", html)
+            # Discarded row decision is private 1, not public 99
+            self.assertIn("<td>99</td><td>1</td><td>1</td>", html.replace(" ", ""))
 
     def test_best_respects_lower_direction(self):
         rows = [
