@@ -46,9 +46,9 @@ Dry-run only: no snapshots, no `results.tsv` rows, no target mutation.
 
 ## JSON alternatives
 
-- `status --json` — full state + budget progress (`candidates_*`, wall fields, `schema_version`)
+- `status --json` — full state + budget progress (`candidates_*`, wall fields, `schema_version`); numeric coercion for `best_score` / experiment ids; unlimited budgets as `null`
 - `results --json` — TSV rows with numeric coercion (`score`/`decision_score`/… as numbers or `null`; `experiment`/`parent_experiment` as int or `null`)
-- `best --json` — best score/snapshot + `schema_version`/`mode` + full candidate/wall budget fields (same progress keys as `status --json`)
+- `best --json` — best score/snapshot + `schema_version`/`mode` + full candidate/wall budget fields (numeric coercion; same progress keys as `status --json`)
 
 ## Example (`score` keep)
 

@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs (README, SKILL, protocol, program-template, security-workflow, tests.md) aligned with budgets, seal, multi-target, and stop rules.
 
 ### Fixed
+- `status --json` / `best --json` coerce `best_score` and experiment ids to numbers (and unlimited budgets to `null`) so stringy legacy `state.json` values do not break harness parsers.
 - `--timeout` must be `>= 1` second; `0`/`-1` no longer become a confusing immediate command timeout.
 - `run-verify` emits machine tokens (`STATUS=ok|invalid`, `PUBLIC`/`PRIVATE`/`DECISION`, `MODE`, `SCHEMA_VERSION`) so harness dry-runs match the score/baseline parse surface.
 - `--parent-experiment` rejects non-integers and values `< 1` with a clean error (no traceback); zero-padded ids like `001` still work.

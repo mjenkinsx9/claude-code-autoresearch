@@ -197,12 +197,32 @@ class BudgetsJsonTests(unittest.TestCase):
             status = run([PYTHON, str(LOOP), "status", "--json", "--output-dir", str(work / "autoresearch-results")], work)
             payload = json.loads(status.stdout)
             self.assertEqual(payload["best_score"], 3)
+            self.assertIsInstance(payload["best_score"], int)
             self.assertEqual(payload["best_experiment"], 1)
+            self.assertIsInstance(payload["best_experiment"], int)
+            self.assertIsInstance(payload["last_experiment"], int)
             self.assertIn("mode", payload)
             self.assertEqual(payload.get("schema_version"), 2)
             self.assertEqual(payload["candidates_done"], 0)
             self.assertIsNone(payload["candidates_remaining"])
+            self.assertIsNone(payload["max_experiments"])
             self.assertFalse(payload["budget_exhausted"])
+
+            # Legacy stringy state.json still coerces for harness parsers
+            state_path = work / "autoresearch-results" / "state.json"
+            st = json.loads(state_path.read_text(encoding="utf-8"))
+            st["best_score"] = "3"
+            st["best_experiment"] = "1"
+            st["last_experiment"] = "1"
+            state_path.write_text(json.dumps(st), encoding="utf-8")
+            coerced = json.loads(run([
+                PYTHON, str(LOOP), "status", "--json",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work).stdout)
+            self.assertEqual(coerced["best_score"], 3)
+            self.assertIsInstance(coerced["best_score"], int)
+            self.assertEqual(coerced["best_experiment"], 1)
+            self.assertIsInstance(coerced["best_experiment"], int)
 
             results = run([
                 PYTHON, str(LOOP), "results", "--json", "--last", "5",
@@ -228,7 +248,9 @@ class BudgetsJsonTests(unittest.TestCase):
             ], work)
             best_payload = json.loads(best.stdout)
             self.assertEqual(best_payload["best_score"], 3)
+            self.assertIsInstance(best_payload["best_score"], int)
             self.assertEqual(best_payload["best_experiment"], 1)
+            self.assertIsInstance(best_payload["best_experiment"], int)
             self.assertIn("candidates_done", best_payload)
             self.assertIn("budget_exhausted", best_payload)
             self.assertEqual(best_payload.get("schema_version"), 2)

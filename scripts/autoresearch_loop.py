@@ -839,18 +839,42 @@ def print_budget_tokens(state: dict[str, Any]) -> None:
         print(f"WALL_REMAINING_SECONDS={progress['wall_remaining_seconds']:.1f}")
 
 
+def coerce_json_number(value: Any) -> float | int | None:
+    """Coerce score-like state values to int/float for JSON agent surfaces."""
+    if value is None or value == "":
+        return None
+    try:
+        val = float(value)
+    except (TypeError, ValueError):
+        return value  # leave unparseable values visible
+    if not math.isfinite(val):
+        return value
+    return int(val) if val.is_integer() else val
+
+
+def coerce_json_int(value: Any) -> int | None:
+    """Coerce experiment ids / counters to int for JSON agent surfaces."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
 def state_public_dict(state: dict[str, Any]) -> dict[str, Any]:
     targets = state.get("targets") or ([state["target"]] if state.get("target") else [])
     progress = budget_progress(state)
     return {
         "target": state.get("target"),
         "targets": targets,
-        "best_score": state.get("best_score"),
-        "best_experiment": state.get("best_experiment"),
-        "last_experiment": state.get("last_experiment"),
+        "best_score": coerce_json_number(state.get("best_score")),
+        "best_experiment": coerce_json_int(state.get("best_experiment")),
+        "last_experiment": coerce_json_int(state.get("last_experiment")),
         "direction": state.get("direction"),
-        "max_experiments": state.get("max_experiments"),
-        "max_wall_seconds": state.get("max_wall_seconds"),
+        # Prefer budget_progress parsing (null when unlimited) over raw state strings
+        "max_experiments": progress["max_experiments"],
+        "max_wall_seconds": progress["max_wall_seconds"],
         "candidates_done": progress["candidates_done"],
         "candidates_remaining": progress["candidates_remaining"],
         "wall_elapsed_seconds": progress["wall_elapsed_seconds"],
@@ -862,7 +886,7 @@ def state_public_dict(state: dict[str, Any]) -> dict[str, Any]:
         "schema_version": int(state.get("schema_version", STATE_SCHEMA_VERSION)),
         "best_snapshot": state.get("best_snapshot"),
         "lineage": state.get("lineage", ""),
-        "next_parent_experiment": state.get("next_parent_experiment"),
+        "next_parent_experiment": coerce_json_int(state.get("next_parent_experiment")),
         "private_verify_command": state.get("private_verify_command") or "",
         "instructions": state.get("instructions") or "",
     }
@@ -1417,8 +1441,8 @@ def cmd_best(args: argparse.Namespace) -> int:
     state = load_state(output_dir)
     progress = budget_progress(state)
     payload = {
-        "best_score": state.get("best_score"),
-        "best_experiment": state.get("best_experiment"),
+        "best_score": coerce_json_number(state.get("best_score")),
+        "best_experiment": coerce_json_int(state.get("best_experiment")),
         "best_snapshot": state.get("best_snapshot"),
         "direction": state.get("direction"),
         "target": state.get("target"),
