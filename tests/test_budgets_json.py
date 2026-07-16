@@ -159,6 +159,7 @@ class BudgetsJsonTests(unittest.TestCase):
             ], work, check=False)
             self.assertEqual(blocked.returncode, 2)
             self.assertIn("BUDGET_EXCEEDED", blocked.stderr + blocked.stdout)
+            self.assertIn("STATUS=budget_exceeded", blocked.stdout)
             self.assertEqual(target.read_text(encoding="utf-8"), "aaaaa")  # score refused before mutate... wait
             # score should not revert or snapshot — target left as caller left it, but not reverted
             # Plan: "do not mutate the target" meaning helper doesn't change it. Content may still be user edit.

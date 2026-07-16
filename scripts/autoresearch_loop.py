@@ -884,6 +884,7 @@ def cmd_score(args: argparse.Namespace) -> int:
     budget_err = check_budget(state)
     if budget_err:
         print(f"ERROR: {budget_err}", file=sys.stderr)
+        print("STATUS=budget_exceeded")
         return BUDGET_EXIT_CODE
 
     allowed = Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve()
@@ -1053,8 +1054,12 @@ def cmd_score(args: argparse.Namespace) -> int:
     })
 
     print(f"Experiment {experiment:03d}: {status.upper()}")
-    # Machine-parseable single token for harness scripts (do not localize)
+    # Machine-parseable tokens for harness scripts (do not localize)
     print(f"STATUS={status}")
+    print(f"EXPERIMENT={experiment:03d}")
+    print(f"PARENT={parent_id:03d}")
+    print(f"DECISION={format_score(decision_score)}")
+    print(f"BEST={format_score(float(state['best_score']))}")
     print(
         f"Score: {format_score(public_score)} | Decision: {format_score(decision_score)} | "
         f"Best: {format_score(float(state['best_score']))} | Direction: {direction} | Parent: {parent_id:03d}"

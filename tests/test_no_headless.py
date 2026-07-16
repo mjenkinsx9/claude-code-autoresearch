@@ -61,6 +61,8 @@ class NoHeadlessAutoresearchTests(unittest.TestCase):
             ], work)
             self.assertIn("KEEP", keep.stdout)
             self.assertIn("STATUS=keep", keep.stdout)
+            self.assertIn("EXPERIMENT=002", keep.stdout)
+            self.assertIn("BEST=4", keep.stdout)
             self.assertEqual(target.read_text(), "aaaa")
 
             target.write_text("a")
