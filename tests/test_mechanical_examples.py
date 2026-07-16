@@ -15,6 +15,7 @@ PYTHON = sys.executable
 LOOP = ROOT / "scripts" / "autoresearch_loop.py"
 HELLO = ROOT / "examples" / "mechanical" / "hello-length"
 COMPRESS = ROOT / "examples" / "mechanical" / "constrained-compress"
+MULTI = ROOT / "examples" / "mechanical" / "multitarget-api"
 
 
 def run(args, cwd: Path, check: bool = True):
@@ -122,6 +123,60 @@ class MechanicalExampleSmokeTests(unittest.TestCase):
             text = (work / "optimize.py").read_text(encoding="utf-8")
             self.assertIn("good", text.lower())
             self.assertNotIn('return "POSITIVE"\n', text.replace("if", ""))
+
+    def test_multitarget_api_example_keep_and_discard(self):
+        """examples/mechanical/multitarget-api: both files snapshotted/restored."""
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            for name in ("evaluate.py", "features.py", "model.py"):
+                shutil.copy(MULTI / name, work / name)
+
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--targets", str(work / "features.py"), str(work / "model.py"),
+                "--verify-command", f"{PYTHON} evaluate.py",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--max-experiments", "5",
+            ], work)
+            base = float(json.loads(
+                (work / "autoresearch-results" / "state.json").read_text(encoding="utf-8")
+            )["best_score"])
+            # baseline: featurize *2, sum([2,4,6]) = 12
+            self.assertEqual(base, 12.0)
+
+            # Improve model score multiplier
+            (work / "model.py").write_text(
+                "def score(features):\n    return sum(features) * 2\n",
+                encoding="utf-8",
+            )
+            keep = run([
+                PYTHON, str(LOOP), "score",
+                "--targets", str(work / "features.py"), str(work / "model.py"),
+                "--description", "double model sum",
+            ], work)
+            self.assertIn("KEEP", keep.stdout)
+            best = float(json.loads(
+                (work / "autoresearch-results" / "state.json").read_text(encoding="utf-8")
+            )["best_score"])
+            self.assertEqual(best, 24.0)
+
+            # Regress features only
+            (work / "features.py").write_text(
+                "def featurize(xs):\n    return [0 for _ in xs]\n",
+                encoding="utf-8",
+            )
+            discard = run([
+                PYTHON, str(LOOP), "score",
+                "--targets", str(work / "features.py"), str(work / "model.py"),
+                "--description", "zero features",
+            ], work)
+            self.assertIn("DISCARD", discard.stdout)
+            # Both files restored to best (features *2, model *2)
+            features = (work / "features.py").read_text(encoding="utf-8")
+            model = (work / "model.py").read_text(encoding="utf-8")
+            self.assertIn("x * 2", features)
+            self.assertIn("* 2", model)
 
 
 if __name__ == "__main__":

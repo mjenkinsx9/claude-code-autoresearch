@@ -92,22 +92,20 @@ LOOP FOREVER:
 
 ## Output Format
 
-After each experiment, `scripts/autoresearch_loop.py` logs to `autoresearch-results/results.tsv`:
+After each experiment, `scripts/autoresearch_loop.py` logs to `autoresearch-results/results.tsv`.
+Full schema (including `private_score`, `parent_experiment`, `lineage`) is in
+`references/results-logging.md`.
 
-```tsv
-experiment	score	max_score	best_score	status	description	timestamp	direction	verify_command	guard_command	snapshot
-```
+Key columns:
 
-- experiment: sequential number (001, 002, etc.)
-- score: parsed mechanical score, or binary yes-answer total when using a supplied eval score
-- max_score: optional theoretical maximum for binary evals; blank for mechanical metrics
-- best_score: best known score after the row
+- experiment: sequential id (001, 002, …)
+- score / private_score: public and optional private metrics
+- best_score: best **decision** score after the row
 - status: keep, discard, or crash
-- description: short text describing what this experiment tried
-- timestamp: ISO 8601 timestamp
-- direction: higher or lower
-- verify_command / guard_command: actual commands used
-- snapshot: saved candidate/baseline file path
+- parent_experiment: parent id (after discard, next parent is best keep)
+- snapshot: snapshot directory (or legacy file) for this experiment
+
+Prefer `status --json` for harness stop checks (`budget_exhausted`, wall remaining).
 
 ## Notes
 
