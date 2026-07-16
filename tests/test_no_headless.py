@@ -45,13 +45,17 @@ class NoHeadlessAutoresearchTests(unittest.TestCase):
                 "print('Score:', len(pathlib.Path(sys.argv[1]).read_text()))\n"
             )
 
-            run([
+            base = run([
                 PYTHON, str(LOOP), "baseline",
                 "--target", str(target),
                 "--verify-command", f"{PYTHON} score.py target.txt",
                 "--metric-regex", r"Score: (\d+)",
                 "--direction", "higher",
             ], work)
+            self.assertIn("STATUS=keep", base.stdout)
+            self.assertIn("EXPERIMENT=001", base.stdout)
+            self.assertIn("DIRECTION=higher", base.stdout)
+            self.assertIn("PUBLIC=3", base.stdout)
 
             target.write_text("aaaa")
             keep = run([
@@ -63,6 +67,8 @@ class NoHeadlessAutoresearchTests(unittest.TestCase):
             self.assertIn("STATUS=keep", keep.stdout)
             self.assertIn("EXPERIMENT=002", keep.stdout)
             self.assertIn("BEST=4", keep.stdout)
+            self.assertIn("PUBLIC=4", keep.stdout)
+            self.assertIn("DIRECTION=higher", keep.stdout)
             self.assertEqual(target.read_text(), "aaaa")
 
             target.write_text("a")

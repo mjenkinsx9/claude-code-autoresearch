@@ -870,7 +870,14 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     })
     print(f"Baseline recorded: {format_score(decision_score)} ({args.direction} is better)")
     print("STATUS=keep")
+    print("EXPERIMENT=001")
+    print("PARENT=")
+    print(f"DECISION={format_score(decision_score)}")
+    print(f"BEST={format_score(decision_score)}")
+    print(f"DIRECTION={args.direction}")
+    print(f"PUBLIC={format_score(score)}")
     if private_cmd:
+        print(f"PRIVATE={format_score(private_score)}")
         print(f"Public score: {format_score(score)} | Private score: {format_score(private_score)}")
     print(f"Snapshot: {snapshot}")
     return 0
@@ -1060,6 +1067,12 @@ def cmd_score(args: argparse.Namespace) -> int:
     print(f"PARENT={parent_id:03d}")
     print(f"DECISION={format_score(decision_score)}")
     print(f"BEST={format_score(float(state['best_score']))}")
+    print(f"DIRECTION={direction}")
+    print(f"PUBLIC={format_score(public_score)}")
+    if private_cmd:
+        print(f"PRIVATE={format_score(private_score)}")
+    if lineage:
+        print(f"LINEAGE={lineage}")
     print(
         f"Score: {format_score(public_score)} | Decision: {format_score(decision_score)} | "
         f"Best: {format_score(float(state['best_score']))} | Direction: {direction} | Parent: {parent_id:03d}"

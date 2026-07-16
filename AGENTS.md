@@ -16,7 +16,7 @@ Do not build workflows around commands such as Claude `-p`, Pi `-p`, or equivale
    - `python scripts/autoresearch_loop.py baseline ...` (`--metric`, optional `--max-experiments`, `--targets`, `--private-verify-command`).
    - `python scripts/autoresearch_loop.py score ...` after each candidate change.
    - `python scripts/eval_engine.py --emit-prompt ...` to prepare binary-eval prompts for the active harness.
-4. Keep, discard, crash, or `BUDGET_EXCEEDED` (exit 2) come from helper output — do not invent keep/discard.
+4. Keep, discard, crash, or budget exceeded come from helper output — parse `STATUS=` / `EXPERIMENT=` / `DECISION=` / `BEST=` (and exit 2 for budget). Do not invent keep/discard.
 5. Failed candidates are reverted by the helper to the best snapshot (multi-file sets included).
 
 ## Development Commands
