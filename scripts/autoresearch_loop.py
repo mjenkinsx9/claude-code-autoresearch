@@ -634,11 +634,21 @@ def revert_targets_from_snapshot(
 
 
 def resolve_timeout(args: argparse.Namespace, state: dict[str, Any] | None = None) -> int:
+    """Resolve verify/guard timeout in seconds (must be >= 1).
+
+    CLI ``--timeout`` wins when set; else sealed state; else ``DEFAULT_TIMEOUT``.
+    Values ``<= 0`` used to reach ``communicate(timeout=-1)`` and surface as a
+    confusing immediate timeout rather than a config error.
+    """
     if getattr(args, "timeout", None) is not None:
-        return int(args.timeout)
-    if state is not None and state.get("timeout") is not None:
-        return int(state["timeout"])
-    return DEFAULT_TIMEOUT
+        value = int(args.timeout)
+    elif state is not None and state.get("timeout") not in (None, ""):
+        value = int(state["timeout"])
+    else:
+        value = DEFAULT_TIMEOUT
+    if value < 1:
+        raise SystemExit(f"ERROR: --timeout must be >= 1 second, got {value}")
+    return value
 
 
 def run_verify(
