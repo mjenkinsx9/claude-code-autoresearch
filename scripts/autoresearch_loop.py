@@ -972,6 +972,7 @@ def cmd_score(args: argparse.Namespace) -> int:
 
 
 def cmd_run_verify(args: argparse.Namespace) -> int:
+    """Dry-run public verify, optional private verify, and optional guard."""
     args.timeout = resolve_timeout(args)
     metric_name = getattr(args, "metric", None) or None
     metric_regex = args.metric_regex or None
@@ -982,6 +983,22 @@ def cmd_run_verify(args: argparse.Namespace) -> int:
         print(verify_result.combined_output[-1000:])
         return 1
     print(f"Metric: {format_score(score)}")
+
+    decision_score = score
+    private_cmd = getattr(args, "private_verify_command", None) or ""
+    if private_cmd:
+        priv_result, private_score, priv_error = run_verify(args, private_cmd, metric_regex, metric_name)
+        print(f"Private verify exit: {priv_result.returncode}")
+        if priv_error:
+            print(f"Private metric: INVALID ({priv_error})")
+            print(priv_result.combined_output[-1000:])
+            return 1
+        print(f"Private metric: {format_score(private_score)}")
+        decision_score = private_score
+        print(f"Decision metric: {format_score(decision_score)} (private)")
+    else:
+        print(f"Decision metric: {format_score(decision_score)} (public)")
+
     if args.guard_command:
         guard_result, guard_error = run_guard(args, args.guard_command)
         print(f"Guard exit: {guard_result.returncode if guard_result else 'skipped'}")

@@ -23,6 +23,35 @@ def run(args, cwd: Path, check: bool = True):
 
 
 class PrivateMetricTests(unittest.TestCase):
+    def test_run_verify_dry_runs_private_and_reports_decision(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("public=1 private=7", encoding="utf-8")
+            (work / "public.py").write_text(
+                "import pathlib\n"
+                "t=pathlib.Path('target.txt').read_text()\n"
+                "print('Score:', t.count('x'))\n",
+                encoding="utf-8",
+            )
+            (work / "private.py").write_text(
+                "import pathlib,re\n"
+                "t=pathlib.Path('target.txt').read_text()\n"
+                "m=re.search(r'private=(\\d+)', t)\n"
+                "print('Score:', m.group(1) if m else 0)\n",
+                encoding="utf-8",
+            )
+            out = run([
+                PYTHON, str(LOOP), "run-verify",
+                "--verify-command", f"{PYTHON} public.py",
+                "--private-verify-command", f"{PYTHON} private.py",
+                "--metric", "Score",
+            ], work)
+            self.assertIn("Metric: 0", out.stdout)  # public: no x
+            self.assertIn("Private metric: 7", out.stdout)
+            self.assertIn("Decision metric: 7", out.stdout)
+            self.assertIn("(private)", out.stdout)
+
     def test_public_up_private_down_discards(self):
         with tempfile.TemporaryDirectory() as td:
             work = Path(td)

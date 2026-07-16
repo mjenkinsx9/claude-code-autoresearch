@@ -161,11 +161,12 @@ python benchmark.py
 ./validate.sh
 ```
 
-Dry-run a candidate verify command before using it:
+Dry-run a candidate verify command before using it (include private verify when planned):
 
 ```bash
 python scripts/autoresearch_loop.py run-verify \
   --verify-command './score.sh' \
+  --private-verify-command './score_holdout.sh' \
   --metric Score \
   --guard-command 'npm test'
 ```
