@@ -1,0 +1,430 @@
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+PYTHON = sys.executable
+LOOP = ROOT / "scripts" / "autoresearch_loop.py"
+
+
+def run(args, cwd: Path, check: bool = True):
+    result = subprocess.run(args, cwd=cwd, text=True, capture_output=True)
+    if check and result.returncode != 0:
+        raise AssertionError(
+            f"command failed: {' '.join(map(str, args))}\n"
+            f"exit={result.returncode}\nstdout={result.stdout}\nstderr={result.stderr}"
+        )
+    return result
+
+
+class BudgetsJsonTests(unittest.TestCase):
+    def test_negative_budget_limits_rejected_on_baseline(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
+                encoding="utf-8",
+            )
+            for flag, value in (("--max-experiments", "-1"), ("--max-wall-seconds", "-5")):
+                with self.subTest(flag=flag, value=value):
+                    blocked = run([
+                        PYTHON, str(LOOP), "baseline",
+                        "--target", str(target),
+                        "--verify-command", f"{PYTHON} score.py target.txt",
+                        "--metric", "Score",
+                        "--direction", "higher",
+                        flag, value,
+                    ], work, check=False)
+                    self.assertNotEqual(blocked.returncode, 0)
+                    msg = (blocked.stderr + blocked.stdout).lower()
+                    self.assertIn("must be >= 0", msg)
+                    self.assertNotIn("traceback", msg)
+
+    def test_max_wall_seconds_allows_score_within_budget(self):
+        """Multi-hour wall budget must not false-expire due to timezone skew."""
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
+                encoding="utf-8",
+            )
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--max-wall-seconds", "3600",
+            ], work)
+            state = json.loads((work / "autoresearch-results" / "state.json").read_text(encoding="utf-8"))
+            # created_at must be timezone-aware UTC (offset present)
+            self.assertTrue(
+                "+" in state["created_at"] or state["created_at"].endswith("Z"),
+                f"expected aware created_at, got {state['created_at']!r}",
+            )
+            target.write_text("aaaa", encoding="utf-8")
+            keep = run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "within wall budget",
+            ], work)
+            self.assertIn("KEEP", keep.stdout)
+            self.assertNotIn("BUDGET_EXCEEDED", keep.stderr + keep.stdout)
+
+    def test_max_wall_seconds_expired_refuses_score(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
+                encoding="utf-8",
+            )
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--max-wall-seconds", "3600",
+            ], work)
+            state_path = work / "autoresearch-results" / "state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            # Force baseline age beyond budget (UTC-aware)
+            from datetime import datetime, timedelta, timezone
+            state["created_at"] = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+            state_path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+            before = target.read_text(encoding="utf-8")
+            target.write_text("aaaa", encoding="utf-8")
+            blocked = run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "should hit wall budget",
+            ], work, check=False)
+            self.assertEqual(blocked.returncode, 2)
+            self.assertIn("BUDGET_EXCEEDED", blocked.stderr + blocked.stdout)
+            self.assertIn("max_wall_seconds", blocked.stderr + blocked.stdout)
+            # Helper must not keep/revert — score refused before mutation of best
+            state2 = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(state2["best_score"], 3)
+            self.assertEqual(state2["last_experiment"], 1)
+
+    def test_check_budget_naive_created_at_not_false_expired(self):
+        """Legacy naive local created_at must not be treated as UTC."""
+        import importlib.util
+        from datetime import datetime, timedelta
+
+        mod_name = "autoresearch_loop_budget_naive"
+        spec = importlib.util.spec_from_file_location(mod_name, LOOP)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+
+        # Naive timestamp = local now (as old code wrote)
+        naive_now = datetime.now().replace(microsecond=0).isoformat()
+        err = mod.check_budget({
+            "last_experiment": 1,
+            "max_wall_seconds": 3600,
+            "created_at": naive_now,
+        })
+        self.assertIsNone(err, f"fresh naive local created_at should be within budget, got {err}")
+
+        old_naive = (datetime.now() - timedelta(hours=2)).replace(microsecond=0).isoformat()
+        err2 = mod.check_budget({
+            "last_experiment": 1,
+            "max_wall_seconds": 3600,
+            "created_at": old_naive,
+        })
+        self.assertIsNotNone(err2)
+        self.assertIn("max_wall_seconds", err2)
+
+    def test_max_experiments_refuses_and_does_not_mutate(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
+                encoding="utf-8",
+            )
+            base = run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--max-experiments", "1",
+            ], work)
+            self.assertIn("CANDIDATES_DONE=0", base.stdout)
+            self.assertIn("CANDIDATES_REMAINING=1", base.stdout)
+            target.write_text("aaaa", encoding="utf-8")
+            scored = run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "only allowed candidate",
+            ], work)
+            # Successful score also emits budget tokens (not only budget_exceeded)
+            self.assertIn("STATUS=keep", scored.stdout)
+            self.assertIn("CANDIDATES_DONE=1", scored.stdout)
+            self.assertIn("CANDIDATES_REMAINING=0", scored.stdout)
+            before = target.read_text(encoding="utf-8")
+            target.write_text("aaaaa", encoding="utf-8")
+            blocked = run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "should budget fail",
+            ], work, check=False)
+            self.assertEqual(blocked.returncode, 2)
+            self.assertIn("BUDGET_EXCEEDED", blocked.stderr + blocked.stdout)
+            self.assertIn("STATUS=budget_exceeded", blocked.stdout)
+            self.assertIn("CANDIDATES_DONE=1", blocked.stdout)
+            self.assertIn("CANDIDATES_REMAINING=0", blocked.stdout)
+            self.assertIn("BEST=", blocked.stdout)
+            self.assertEqual(target.read_text(encoding="utf-8"), "aaaaa")  # score refused before mutate... wait
+            # score should not revert or snapshot — target left as caller left it, but not reverted
+            # Plan: "do not mutate the target" meaning helper doesn't change it. Content may still be user edit.
+            # Best stays previous keep.
+            state = json.loads((work / "autoresearch-results" / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(state["best_score"], 4)
+            self.assertEqual(state["last_experiment"], 2)
+
+    def test_status_results_best_json(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
+                encoding="utf-8",
+            )
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+            ], work)
+            status = run([PYTHON, str(LOOP), "status", "--json", "--output-dir", str(work / "autoresearch-results")], work)
+            payload = json.loads(status.stdout)
+            self.assertEqual(payload["best_score"], 3)
+            self.assertIsInstance(payload["best_score"], int)
+            self.assertEqual(payload["best_experiment"], 1)
+            self.assertIsInstance(payload["best_experiment"], int)
+            self.assertIsInstance(payload["last_experiment"], int)
+            self.assertIn("mode", payload)
+            self.assertEqual(payload.get("schema_version"), 2)
+            self.assertEqual(payload["candidates_done"], 0)
+            self.assertIsNone(payload["candidates_remaining"])
+            self.assertIsNone(payload["max_experiments"])
+            self.assertFalse(payload["budget_exhausted"])
+
+            # Legacy stringy state.json still coerces for harness parsers
+            state_path = work / "autoresearch-results" / "state.json"
+            st = json.loads(state_path.read_text(encoding="utf-8"))
+            st["best_score"] = "3"
+            st["best_experiment"] = "1"
+            st["last_experiment"] = "1"
+            state_path.write_text(json.dumps(st), encoding="utf-8")
+            coerced = json.loads(run([
+                PYTHON, str(LOOP), "status", "--json",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work).stdout)
+            self.assertEqual(coerced["best_score"], 3)
+            self.assertIsInstance(coerced["best_score"], int)
+            self.assertEqual(coerced["best_experiment"], 1)
+            self.assertIsInstance(coerced["best_experiment"], int)
+
+            results = run([
+                PYTHON, str(LOOP), "results", "--json", "--last", "5",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work)
+            rows = json.loads(results.stdout)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["status"], "keep")
+            # Numeric coercion: scores/ids are numbers, blanks are null
+            self.assertEqual(rows[0]["experiment"], 1)
+            self.assertIsInstance(rows[0]["experiment"], int)
+            self.assertEqual(rows[0]["score"], 3)
+            self.assertIsInstance(rows[0]["score"], int)
+            self.assertEqual(rows[0]["best_score"], 3)
+            self.assertEqual(rows[0]["decision_score"], 3)
+            self.assertIsNone(rows[0]["private_score"])
+            self.assertIsNone(rows[0]["max_score"])
+            self.assertIsNone(rows[0]["parent_experiment"])
+
+            best = run([
+                PYTHON, str(LOOP), "best", "--json",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work)
+            best_payload = json.loads(best.stdout)
+            self.assertEqual(best_payload["best_score"], 3)
+            self.assertIsInstance(best_payload["best_score"], int)
+            self.assertEqual(best_payload["best_experiment"], 1)
+            self.assertIsInstance(best_payload["best_experiment"], int)
+            self.assertIn("candidates_done", best_payload)
+            self.assertIn("budget_exhausted", best_payload)
+            self.assertEqual(best_payload.get("schema_version"), 2)
+            self.assertEqual(best_payload.get("mode"), "mechanical-no-headless")
+            self.assertIn("wall_elapsed_seconds", best_payload)
+            self.assertIn("wall_budget_exhausted", best_payload)
+            self.assertIn("max_experiments", best_payload)
+
+            # --last 0 must not mean "all rows" (and must not use rows[-0:] full slice)
+            zero = run([
+                PYTHON, str(LOOP), "results", "--json", "--last", "0",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work)
+            self.assertEqual(json.loads(zero.stdout), [])
+            bad = run([
+                PYTHON, str(LOOP), "results", "--json", "--last", "-1",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work, check=False)
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertIn("--last must be >= 0", bad.stderr + bad.stdout)
+
+    def test_status_json_includes_wall_remaining(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
+                encoding="utf-8",
+            )
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--max-wall-seconds", "3600",
+            ], work)
+            payload = json.loads(run([
+                PYTHON, str(LOOP), "status", "--json",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work).stdout)
+            self.assertIsNotNone(payload.get("wall_elapsed_seconds"))
+            self.assertIsNotNone(payload.get("wall_remaining_seconds"))
+            self.assertLess(payload["wall_elapsed_seconds"], 60)
+            self.assertGreater(payload["wall_remaining_seconds"], 3500)
+            self.assertFalse(payload["wall_budget_exhausted"])
+            self.assertFalse(payload["budget_exhausted"])
+            text = run([
+                PYTHON, str(LOOP), "status",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work).stdout
+            self.assertIn("Wall budget:", text)
+            self.assertIn("remaining", text)
+            best_payload = json.loads(run([
+                PYTHON, str(LOOP), "best", "--json",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work).stdout)
+            self.assertIsNotNone(best_payload.get("wall_remaining_seconds"))
+            self.assertGreater(best_payload["wall_remaining_seconds"], 3500)
+            self.assertEqual(best_payload.get("max_wall_seconds"), 3600.0)
+            best_text = run([
+                PYTHON, str(LOOP), "best",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work).stdout
+            self.assertIn("Wall budget:", best_text)
+
+    def test_status_text_shows_budget_progress(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
+                encoding="utf-8",
+            )
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--max-experiments", "3",
+            ], work)
+            target.write_text("aaaa", encoding="utf-8")
+            run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "one",
+            ], work)
+            text = run([
+                PYTHON, str(LOOP), "status",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work).stdout
+            self.assertIn("Budget: 1/3 candidates used", text)
+            self.assertIn("2 remaining", text)
+            self.assertNotIn("EXHAUSTED", text)
+
+    def test_status_json_budget_progress_after_scores(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')))\n",
+                encoding="utf-8",
+            )
+            run([
+                PYTHON, str(LOOP), "baseline",
+                "--target", str(target),
+                "--verify-command", f"{PYTHON} score.py target.txt",
+                "--metric", "Score",
+                "--direction", "higher",
+                "--max-experiments", "2",
+            ], work)
+            target.write_text("aaaa", encoding="utf-8")
+            run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "first candidate",
+            ], work)
+            status = run([
+                PYTHON, str(LOOP), "status", "--json",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work)
+            payload = json.loads(status.stdout)
+            self.assertEqual(payload["candidates_done"], 1)
+            self.assertEqual(payload["candidates_remaining"], 1)
+            self.assertFalse(payload["budget_exhausted"])
+            self.assertEqual(payload["max_experiments"], 2)
+
+            target.write_text("aaaaa", encoding="utf-8")
+            run([
+                PYTHON, str(LOOP), "score",
+                "--target", str(target),
+                "--description", "second candidate",
+            ], work)
+            status2 = run([
+                PYTHON, str(LOOP), "status", "--json",
+                "--output-dir", str(work / "autoresearch-results"),
+            ], work)
+            payload2 = json.loads(status2.stdout)
+            self.assertEqual(payload2["candidates_done"], 2)
+            self.assertEqual(payload2["candidates_remaining"], 0)
+            self.assertTrue(payload2["budget_exhausted"])
+
+
+if __name__ == "__main__":
+    unittest.main()

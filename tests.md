@@ -1,68 +1,60 @@
 # Autoresearch Agent verification
 
-Last verified: pending current PR
+Last verified: 2026-07-16 (P1 polish: dashboard decision best, eval integrity, docs)
 
-## Scenario 1 — CLI help exposes no-headless commands
+Automated source of truth: `python3 -m pytest tests/ -q`
 
-Input:
+## Scenario 1 — CLI help surfaces
 
 ```bash
 python3 scripts/autoresearch_loop.py --help
+python3 scripts/autoresearch_loop.py baseline --help
+python3 scripts/autoresearch_loop.py score --help
 python3 scripts/eval_engine.py --help
 ```
 
-Expected result:
+Expected:
 
-- `autoresearch_loop.py` help includes `baseline`, `score`, and `run-verify`.
-- `eval_engine.py` help includes `--emit-prompt`, `--judgments-file`, and no agent backend flags.
+- Top-level loop help lists: `baseline`, `score`, `run-verify`, `status`, `results`, `best`, `fork`
+- `baseline --help` includes `--metric`, `--max-experiments`, `--targets`, `--private-verify-command`
+- `score --help` includes `--allow-config-change`, `--strict-snapshots`
+- Eval help includes `--emit-prompt`, `--judgments-file`, `--allow-partial-judgments`; no agent backend
 
-## Scenario 2 — Mechanical baseline and score keep/discard
-
-Input:
+## Scenario 2 — Mechanical keep / discard
 
 ```bash
 python3 scripts/autoresearch_loop.py baseline \
   --target target.txt \
   --verify-command 'python3 score.py target.txt' \
-  --direction higher
+  --metric Score \
+  --direction higher \
+  --max-experiments 10
 
 python3 scripts/autoresearch_loop.py score \
   --target target.txt \
   --description 'candidate change'
 ```
 
-Expected result:
+Expected: KEEP on improve, DISCARD reverts; `state.json` has UTC `created_at` and `best_snapshot_sha256`.
 
-- Baseline writes `autoresearch-results/state.json`.
-- Score writes `results.tsv`.
-- Improved score is kept.
-- Worse score is reverted to the best snapshot.
+## Scenario 3 — Guard / private / multi-target / budget / parent
 
-## Scenario 3 — Guard failure reverts
+Covered by pytest modules (preferred over manual):
 
-Input:
+| Module | What it proves |
+|---|---|
+| `test_no_headless.py` | Core keep/discard + eval + agent_cli |
+| `test_integrity.py` | Metric name, seal, snapshot escape, UTF-8, cwd seal |
+| `test_lineage_multitarget.py` | Parent after discard; multi-file restore |
+| `test_budgets_json.py` | max_experiments; max_wall keep/expired; JSON CLI |
+| `test_private_metric.py` | Private decision KEEP/DISCARD; fork |
+| `test_snapshot_sandbox.py` | Artifact escape; strict hash; sealed targets |
+| `test_eval_engine.py` | Overcount, duplicate ids, output count, untrusted tags |
+| `test_dashboard.py` | Decision best ≠ public spike; lower direction |
+| `test_meta_self_improve.py` | End-to-end Score improves with real CLI |
+| `test_mechanical_examples.py` | Shipped hello-length, constrained-compress, multitarget-api via real loop |
 
-```bash
-python3 scripts/autoresearch_loop.py baseline \
-  --target target.txt \
-  --verify-command 'python3 score.py target.txt' \
-  --direction higher \
-  --guard-command './guard.sh'
-
-python3 scripts/autoresearch_loop.py score \
-  --target target.txt \
-  --description 'guard failing change'
-```
-
-Expected result:
-
-- If verify improves but guard exits non-zero, status is `crash`.
-- Target reverts to the best snapshot.
-- Guard output is saved under `autoresearch-results/runs/`.
-
-## Scenario 4 — Binary eval emits prompt and scores supplied judgments
-
-Input:
+## Scenario 4 — Binary eval
 
 ```bash
 python3 scripts/eval_engine.py \
@@ -76,20 +68,12 @@ python3 scripts/eval_engine.py \
   --judgments '{"outputs":[{"output_id":"sample","scores":[{"criterion":1,"question":"Does it work?","passed":true,"evidence":"yes"}]}]}'
 ```
 
-Expected result:
+Expected: untrusted framing in prompt; `Score: 1/1`; overcount exits non-zero.
 
-- The first command prints a judge prompt for the active harness.
-- The second command prints `Score:` without calling any model CLI.
-
-## Scenario 5 — Legacy headless adapter is disabled
-
-Input:
+## Scenario 5 — Headless adapter disabled
 
 ```bash
 python3 scripts/agent_cli.py
 ```
 
-Expected result:
-
-- Command exits non-zero.
-- Output explains that headless agent invocation has been removed.
+Expected: non-zero exit; message that headless invocation was removed.

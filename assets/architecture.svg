@@ -1,108 +1,37 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 450" font-family="'Segoe UI', -apple-system, 'Helvetica Neue', Arial, sans-serif">
-  <rect width="920" height="450" rx="16" fill="#0f0f23"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 420" font-family="'Segoe UI', -apple-system, 'Helvetica Neue', Arial, sans-serif">
+  <rect width="920" height="420" rx="16" fill="#0f0f23"/>
+  <text x="460" y="36" text-anchor="middle" fill="#ffffff" font-size="17" font-weight="700" letter-spacing="1">NO-HEADLESS AUTORESEARCH (v2+)</text>
 
-  <text x="460" y="38" text-anchor="middle" fill="#ffffff" font-size="17" font-weight="700" letter-spacing="2">HOW THE PIECES FIT</text>
+  <!-- You provide -->
+  <text x="140" y="70" text-anchor="middle" fill="#888888" font-size="11" letter-spacing="2">YOU PROVIDE</text>
+  <rect x="40" y="82" width="200" height="48" rx="10" fill="#1a1a3e" stroke="#2a2a5e"/>
+  <text x="140" y="110" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="600">target file(s) + metric</text>
+  <rect x="40" y="142" width="200" height="48" rx="10" fill="#1a1a3e" stroke="#2a2a5e"/>
+  <text x="140" y="170" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="600">verify / guard commands</text>
+  <rect x="40" y="202" width="200" height="48" rx="10" fill="#1a1a3e" stroke="#2a2a5e"/>
+  <text x="140" y="230" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="600">optional private verify</text>
 
-  <!-- ======== inputs (left) ======== -->
-  <text x="135" y="74" text-anchor="middle" fill="#888888" font-size="11" letter-spacing="2">YOU PROVIDE</text>
-  <g>
-    <rect x="40" y="86" width="190" height="56" rx="10" fill="#1a1a3e" stroke="#2a2a5e"/>
-    <text x="135" y="109" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="600">program.md</text>
-    <text x="135" y="126" text-anchor="middle" fill="#888888" font-size="10.5">strategy &#38; constraints (read-only)</text>
-  </g>
-  <g>
-    <rect x="40" y="158" width="190" height="56" rx="10" fill="#1a1a3e" stroke="#2a2a5e"/>
-    <text x="135" y="181" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="600">target file</text>
-    <text x="135" y="198" text-anchor="middle" fill="#888888" font-size="10.5">skill &#183; prompt &#183; doc &#183; code</text>
-  </g>
-  <g>
-    <rect x="40" y="230" width="190" height="56" rx="10" fill="#1a1a3e" stroke="#2a2a5e"/>
-    <text x="135" y="253" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="600">eval.json</text>
-    <text x="135" y="270" text-anchor="middle" fill="#888888" font-size="10.5">binary criteria + test prompts</text>
-  </g>
+  <!-- Active harness -->
+  <rect x="300" y="82" width="320" height="200" rx="12" fill="#161636" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="460" y="112" text-anchor="middle" fill="#ffffff" font-size="15" font-weight="700">Active harness session</text>
+  <text x="460" y="132" text-anchor="middle" fill="#a5b4fc" font-size="11">Claude Code · Codex · Gemini · Pi · Hermes</text>
+  <text x="460" y="168" text-anchor="middle" fill="#c4c4e0" font-size="12">reads state · makes ONE change</text>
+  <text x="460" y="192" text-anchor="middle" fill="#c4c4e0" font-size="12">runs helper score · never shells a second model</text>
+  <text x="460" y="216" text-anchor="middle" fill="#c4c4e0" font-size="12">optional in-session binary judgments</text>
+  <text x="460" y="250" text-anchor="middle" fill="#888888" font-size="11">the agent runtime is this session</text>
 
-  <!-- ======== core (centre) ======== -->
-  <rect x="310" y="86" width="310" height="230" rx="12" fill="#161636" stroke="#3b3b7a" stroke-width="1.5"/>
-  <text x="465" y="114" text-anchor="middle" fill="#ffffff" font-size="14" font-weight="700">autoresearch_loop.py</text>
-  <text x="465" y="132" text-anchor="middle" fill="#888888" font-size="10.5">the experiment engine</text>
+  <!-- Helpers -->
+  <text x="780" y="70" text-anchor="middle" fill="#888888" font-size="11" letter-spacing="2">DETERMINISTIC HELPERS</text>
+  <rect x="680" y="82" width="200" height="44" rx="10" fill="#0f2a1f" stroke="#166534"/>
+  <text x="780" y="108" text-anchor="middle" fill="#a7f3d0" font-size="12" font-weight="600">autoresearch_loop.py</text>
+  <rect x="680" y="136" width="200" height="44" rx="10" fill="#0f2a1f" stroke="#166534"/>
+  <text x="780" y="162" text-anchor="middle" fill="#a7f3d0" font-size="12" font-weight="600">eval_engine.py</text>
+  <rect x="680" y="190" width="200" height="44" rx="10" fill="#0f2a1f" stroke="#166534"/>
+  <text x="780" y="216" text-anchor="middle" fill="#a7f3d0" font-size="12" font-weight="600">generate_dashboard.py</text>
+  <text x="780" y="255" text-anchor="middle" fill="#888888" font-size="10">verify · snapshot · keep/discard · score</text>
 
-  <g font-size="11" text-anchor="middle">
-    <rect x="330" y="148" width="130" height="26" rx="13" fill="#1a1a3e" stroke="#2a2a5e"/>
-    <text x="395" y="165" fill="#a8a8c8">baseline gate</text>
-    <rect x="470" y="148" width="130" height="26" rx="13" fill="#1a1a3e" stroke="#2a2a5e"/>
-    <text x="535" y="165" fill="#a8a8c8">one change / iter</text>
-    <rect x="330" y="184" width="130" height="26" rx="13" fill="#1a1a3e" stroke="#2a2a5e"/>
-    <text x="395" y="201" fill="#a8a8c8">--guard check</text>
-    <rect x="470" y="184" width="130" height="26" rx="13" fill="#1a1a3e" stroke="#2a2a5e"/>
-    <text x="535" y="201" fill="#a8a8c8">auto-revert</text>
-    <rect x="330" y="220" width="130" height="26" rx="13" fill="#1a1a3e" stroke="#2a2a5e"/>
-    <text x="395" y="237" fill="#a8a8c8">crash stop &#215;5</text>
-    <rect x="470" y="220" width="130" height="26" rx="13" fill="#1a1a3e" stroke="#2a2a5e"/>
-    <text x="535" y="237" fill="#a8a8c8">LLM judge</text>
-  </g>
-  <text x="465" y="288" text-anchor="middle" fill="#56567e" font-size="10.5">modify &#8594; verify &#8594; score &#8594; keep / revert &#8594; log &#8594; repeat</text>
-
-  <!-- ======== backends (right) ======== -->
-  <text x="800" y="74" text-anchor="middle" fill="#888888" font-size="11" letter-spacing="2">AGENT BACKENDS</text>
-  <g>
-    <rect x="705" y="86" width="190" height="48" rx="10" fill="#1a1a3e" stroke="#2a2a5e"/>
-    <text x="800" y="106" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="600">Claude Code</text>
-    <text x="800" y="122" text-anchor="middle" fill="#888888" font-size="10">claude -p &#8230;</text>
-  </g>
-  <g>
-    <rect x="705" y="148" width="190" height="48" rx="10" fill="#1a1a3e" stroke="#2a2a5e"/>
-    <text x="800" y="168" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="600">Hermes</text>
-    <text x="800" y="184" text-anchor="middle" fill="#888888" font-size="10">hermes chat -Q -q &#8230;</text>
-  </g>
-  <g>
-    <rect x="705" y="210" width="190" height="48" rx="10" fill="#1a1a3e" stroke="#2a2a5e"/>
-    <text x="800" y="230" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="600">custom CLI</text>
-    <text x="800" y="246" text-anchor="middle" fill="#888888" font-size="10">any command &#8594; stdout</text>
-  </g>
-
-  <!-- ======== outputs (bottom) ======== -->
-  <text x="465" y="356" text-anchor="middle" fill="#888888" font-size="11" letter-spacing="2">YOU WAKE UP TO</text>
-  <g>
-    <rect x="240" y="368" width="140" height="44" rx="10" fill="#11112c" stroke="#064e3b"/>
-    <text x="310" y="388" text-anchor="middle" fill="#4ade80" font-size="12.5" font-weight="600">results.tsv</text>
-    <text x="310" y="404" text-anchor="middle" fill="#888888" font-size="10">the research log</text>
-  </g>
-  <g>
-    <rect x="396" y="368" width="140" height="44" rx="10" fill="#11112c" stroke="#2a2a5e"/>
-    <text x="466" y="388" text-anchor="middle" fill="#e0e0e0" font-size="12.5" font-weight="600">snapshots/</text>
-    <text x="466" y="404" text-anchor="middle" fill="#888888" font-size="10">every experiment state</text>
-  </g>
-  <g>
-    <rect x="552" y="368" width="140" height="44" rx="10" fill="#11112c" stroke="#2a2a5e"/>
-    <text x="622" y="388" text-anchor="middle" fill="#e0e0e0" font-size="12.5" font-weight="600">dashboard.html</text>
-    <text x="622" y="404" text-anchor="middle" fill="#888888" font-size="10">trends at a glance</text>
-  </g>
-
-  <!-- ======== connectors ======== -->
-  <g stroke="#3b3b7a" stroke-width="1.5">
-    <path id="in1" d="M 230 114 L 310 130" fill="none"/>
-    <path id="in2" d="M 230 186 L 310 186" fill="none"/>
-    <path id="in3" d="M 230 258 L 310 242" fill="none"/>
-    <path id="out-prompt" d="M 620 150 L 705 150" fill="none"/>
-    <path id="back-resp" d="M 705 196 L 620 196" fill="none"/>
-    <path id="o1" d="M 390 316 L 330 368" fill="none"/>
-    <path id="o2" d="M 465 316 L 465 368" fill="none"/>
-    <path id="o3" d="M 540 316 L 600 368" fill="none"/>
-  </g>
-  <text x="662" y="142" text-anchor="middle" fill="#56567e" font-size="9.5">prompts</text>
-  <text x="662" y="210" text-anchor="middle" fill="#56567e" font-size="9.5">responses</text>
-
-  <!-- data pulses -->
-  <g fill="#60a5fa">
-    <circle r="3.5"><animateMotion dur="3s" begin="0s" repeatCount="indefinite"><mpath href="#in1"/></animateMotion></circle>
-    <circle r="3.5"><animateMotion dur="3s" begin="1s" repeatCount="indefinite"><mpath href="#in2"/></animateMotion></circle>
-    <circle r="3.5"><animateMotion dur="3s" begin="2s" repeatCount="indefinite"><mpath href="#in3"/></animateMotion></circle>
-    <circle r="3.5"><animateMotion dur="2.4s" begin="0.4s" repeatCount="indefinite"><mpath href="#out-prompt"/></animateMotion></circle>
-  </g>
-  <g fill="#4ade80">
-    <circle r="3.5"><animateMotion dur="2.4s" begin="1.6s" repeatCount="indefinite"><mpath href="#back-resp"/></animateMotion></circle>
-    <circle r="3.5"><animateMotion dur="2.8s" begin="0.8s" repeatCount="indefinite"><mpath href="#o1"/></animateMotion></circle>
-    <circle r="3.5"><animateMotion dur="2.8s" begin="1.7s" repeatCount="indefinite"><mpath href="#o2"/></animateMotion></circle>
-    <circle r="3.5"><animateMotion dur="2.8s" begin="2.6s" repeatCount="indefinite"><mpath href="#o3"/></animateMotion></circle>
-  </g>
+  <!-- Flow -->
+  <text x="460" y="320" text-anchor="middle" fill="#ffffff" font-size="13" font-weight="600">baseline → one change → score → KEEP / DISCARD / CRASH → log → repeat</text>
+  <text x="460" y="348" text-anchor="middle" fill="#888888" font-size="11">budgets · parent lineage · multi-target snapshots · sealed config · named metrics</text>
+  <text x="460" y="380" text-anchor="middle" fill="#666680" font-size="11">No headless model backends. No claude -p / print modes for the loop.</text>
 </svg>

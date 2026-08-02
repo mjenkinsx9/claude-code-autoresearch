@@ -243,7 +243,7 @@ iteration	vector	severity	owasp	stride	confidence	location	description
 
 #### Phase 6: Repeat
 
-- **Unbounded:** Keep finding vulnerabilities. Never stop. Never ask.
+- **Unbounded:** Keep finding vulnerabilities until the user interrupts, a bound is reached, or a stop rule fires (secrets/production touch, repeated failures).
 - **Bounded:** After N active-harness iterations, generate final report and stop.
 - **Coverage tracking:** Every 5 iterations, print coverage summary.
 
@@ -311,7 +311,9 @@ This incentivizes the loop to cover ALL categories before going deep on any one.
 
 ## Flags & Modes
 
-### `--diff` — Delta Mode
+> **Important:** The flags below are **conventions for the active harness** (how to scope a prose-driven security audit), not subcommands of `scripts/autoresearch_loop.py`. There is no `autoresearch-security` CLI binary in this package.
+
+### `--diff` — Delta Mode (harness convention)
 
 Only audit files changed since the last audit.
 

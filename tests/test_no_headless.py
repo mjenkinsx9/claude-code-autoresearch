@@ -46,21 +46,38 @@ class NoHeadlessAutoresearchTests(unittest.TestCase):
                 "print('Score:', len(pathlib.Path(sys.argv[1]).read_text()))\n"
             )
 
-            run([
+            base = run([
                 PYTHON, str(LOOP), "baseline",
                 "--target", str(target),
                 "--verify-command", f"{PYTHON} score.py target.txt",
                 "--metric-regex", r"Score: (\d+)",
                 "--direction", "higher",
             ], work)
+            self.assertIn("STATUS=keep", base.stdout)
+            self.assertIn("EXPERIMENT=001", base.stdout)
+            self.assertIn("DIRECTION=higher", base.stdout)
+            self.assertIn("PUBLIC=3", base.stdout)
+            self.assertIn("MODE=mechanical-no-headless", base.stdout)
+            self.assertIn("SCHEMA_VERSION=2", base.stdout)
+            self.assertIn("OUTPUT_DIR=", base.stdout)
 
             target.write_text("aaaa")
             keep = run([
                 PYTHON, str(LOOP), "score",
                 "--target", str(target),
                 "--description", "longer candidate",
+                "--lineage", "exploit\nbranch",
             ], work)
             self.assertIn("KEEP", keep.stdout)
+            self.assertIn("STATUS=keep", keep.stdout)
+            self.assertIn("EXPERIMENT=002", keep.stdout)
+            self.assertIn("BEST=4", keep.stdout)
+            self.assertIn("PUBLIC=4", keep.stdout)
+            self.assertIn("DIRECTION=higher", keep.stdout)
+            self.assertIn("DESCRIPTION=longer candidate", keep.stdout)
+            # Free-text tokens must stay single-line for KEY=value parsers
+            self.assertIn("LINEAGE=exploit branch", keep.stdout)
+            self.assertNotIn("LINEAGE=exploit\n", keep.stdout)
             self.assertEqual(target.read_text(), "aaaa")
 
             target.write_text("a")
@@ -70,11 +87,40 @@ class NoHeadlessAutoresearchTests(unittest.TestCase):
                 "--description", "shorter regression",
             ], work)
             self.assertIn("DISCARD", discard.stdout)
+            self.assertIn("STATUS=discard", discard.stdout)
+            self.assertIn("REVERTED=true", discard.stdout)
+            self.assertIn("SNAPSHOT=", discard.stdout)
+            self.assertIn("BEST_SNAPSHOT=", discard.stdout)
             self.assertEqual(target.read_text(), "aaaa")
 
             rows = (work / "autoresearch-results" / "results.tsv").read_text()
             self.assertIn("longer candidate", rows)
             self.assertIn("shorter regression", rows)
+
+    def test_non_positive_timeout_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            target = work / "target.txt"
+            target.write_text("aaa", encoding="utf-8")
+            (work / "score.py").write_text(
+                "import pathlib, sys\n"
+                "print('Score:', len(pathlib.Path(sys.argv[1]).read_text()))\n",
+                encoding="utf-8",
+            )
+            for bad in (0, -1):
+                with self.subTest(timeout=bad):
+                    blocked = run([
+                        PYTHON, str(LOOP), "run-verify",
+                        "--verify-command", f"{PYTHON} score.py target.txt",
+                        "--metric", "Score",
+                        "--timeout", str(bad),
+                    ], work, check=False)
+                    self.assertNotEqual(blocked.returncode, 0)
+                    msg = blocked.stderr + blocked.stdout
+                    self.assertIn("timeout must be >= 1", msg.lower())
+                    self.assertNotIn("Traceback", msg)
+                    # Must not look like a command timeout
+                    self.assertNotIn("STATUS=invalid", msg)
 
     def test_guard_failure_is_crash_and_reverts(self):
         with tempfile.TemporaryDirectory() as td:

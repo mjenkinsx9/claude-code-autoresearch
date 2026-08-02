@@ -5,6 +5,72 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`--metric NAME`** on the loop helper: extract `name: value` / `name = value` (last match wins). Prefer this over the last-number fallback.
+- **Config seal** on `score`: changing verify/guard/metric/direction/private-verify/**cwd**/**targets**/**max-score** mid-run requires `--allow-config-change`.
+- **Snapshot sandbox**: revert refuses paths outside `snapshots/`; artifact paths cannot escape the bundle; stores `best_snapshot_sha256` with working `--strict-snapshots`.
+- **Directory multi-file snapshots** with `manifest.json` + `--targets`.
+- **Parent lineage** (`parent_experiment`, `lineage`); after discard next parent is best keep; `fork` subcommand.
+- **Budgets**: `--max-experiments`, `--max-wall-seconds` (UTC-aware `created_at`); score exits 2 with `BUDGET_EXCEEDED`.
+- **JSON agent surface**: `status --json`, `results --json`, `best --json`.
+- **Private verify**: `--private-verify-command` drives keep/discard; dashboard **decision best** uses `best_score` / private, not public spikes.
+- **Eval hard-fail**: overcount, duplicate criterion ids, judgment count ≠ outputs unless `--allow-partial-judgments`; untrusted delimiter neutralization.
+- `references/eval-script-guide.md` and `examples/mechanical/*` frozen-eval samples.
+- Atomic `state.json` writes; UTF-8 I/O; process-group kill on timeout (POSIX).
+
+### Changed
+- `--timeout` default is unset so score inherits baseline timeout (else 120s).
+- Metric regex uses the **last** match (print metric near end of eval output).
+- Architecture SVG: active harness + deterministic helpers (no headless backends).
+- Docs (README, SKILL, protocol, program-template, security-workflow, tests.md) aligned with budgets, seal, multi-target, and stop rules.
+
+### Fixed
+- `eval_engine` rejects duplicate criterion ids in eval config (including conflicts with default 1..N positional ids) before emit-prompt/score.
+- `generate_dashboard.py` rejects non-file `--results` paths (directories) with a clean error instead of a traceback.
+- `--max-score` must be finite and `>= 0` (negative known maxima rejected on baseline and sealed score updates).
+- Free-text machine tokens (`DESCRIPTION`, `LINEAGE`) are single-line (tabs/newlines collapsed) so values with whitespace cannot split `KEY=value` parsers.
+- Negative `--max-experiments` / `--max-wall-seconds` are rejected on baseline (they previously stored and immediately tripped `BUDGET_EXCEEDED` on every score).
+- `status --json` / `best --json` coerce `best_score` and experiment ids to numbers (and unlimited budgets to `null`) so stringy legacy `state.json` values do not break harness parsers.
+- `--timeout` must be `>= 1` second; `0`/`-1` no longer become a confusing immediate command timeout.
+- `run-verify` emits machine tokens (`STATUS=ok|invalid`, `PUBLIC`/`PRIVATE`/`DECISION`, `MODE`, `SCHEMA_VERSION`) so harness dry-runs match the score/baseline parse surface.
+- `--parent-experiment` rejects non-integers and values `< 1` with a clean error (no traceback); zero-padded ids like `001` still work.
+- `eval_engine.py` creates missing parent directories for `--prompt-file` and `--results-file` (nested harness paths no longer fail with `FileNotFoundError`).
+- `generate_dashboard.py` creates missing parent directories for `--output` (nested report paths no longer fail with `FileNotFoundError`).
+- Metric extraction rejects non-finite values (`nan` / `inf`) so a permissive `--metric-regex` cannot keep/discard or log invalid scores.
+- Seal **`max_score`**: mid-run `--max-score` changes require `--allow-config-change` (same value is a no-op; was previously ignored silently).
+- Fresh `baseline` rotates an orphan `results.tsv` when `state.json` is missing (not only on `--force`), so leftover logs no longer produce duplicate `001` rows.
+- `eval_engine` rejects empty `criteria` / `test_prompts` and criteria missing `question`, so harnesses cannot record vacuous `0/0` scores from a broken config.
+- `results --last 0` returns no rows (was treated as unlimited); negative `--last` is rejected. Avoids Python’s `seq[-0:]` full-slice trap.
+- Dashboard chart path starts at the first numeric decision score (not index 0), so leading `fork`/blank-score rows no longer skip `moveTo` and break the trajectory line.
+- `fork` experiment ids use microsecond stamps (+ counter) so multiple forks in the same second no longer share one `fork-…` id in `results.tsv`.
+- `best --json` includes `schema_version`, `mode`, and full wall/candidate budget fields (parity with `status --json`); plain `best` prints wall budget when capped.
+- `baseline --force` rotates `results.tsv` with microsecond-unique names and a counter so a second force in the same second never clobbers a prior `results.prev.*.tsv` archive.
+- `baseline` / `score` always print `CANDIDATES_DONE` (and `CANDIDATES_REMAINING` / `WALL_REMAINING_SECONDS` when capped) so harnesses can stop without a separate `status` call; same tokens as `budget_exceeded`.
+- `results --json` coerces score / decision columns and experiment ids to numbers (`null` when blank), matching `status --json` / `best --json` instead of leaving TSV strings.
+- Wall-clock budgets no longer false-expire when host is west of UTC (aware UTC timestamps; naive legacy parsed as local).
+- Strict snapshot hash comparison for directory snapshots; multi-target subset no longer silently shrinks sealed scope.
+- Score **ties** use `math.isclose` so float noise (e.g. `0.1+0.2` vs `0.3`) no longer blocks size-based simplification or spuriously counts as improvement.
+- `run-verify` dry-runs `--private-verify-command` when set and prints the decision metric (private vs public).
+- `status --json` includes `candidates_done`, `candidates_remaining`, and `budget_exhausted` for harness stop checks.
+- Plain `status` prints budget progress (`Budget: N/M candidates used`) plus lineage/next parent.
+- `status` / `status --json` report wall-clock `wall_elapsed_seconds` / `wall_remaining_seconds` when `--max-wall-seconds` is set.
+- Pytest smokes `examples/mechanical/hello-length`, `constrained-compress`, and `multitarget-api` through the real loop helper.
+- `results.tsv` **`decision_score`** column: metric used for keep/discard (private when configured); dashboard table shows a Decision column.
+- `fork` appends a `status=fork` audit row to `results.tsv` (does not consume candidate budget).
+- `score` / `baseline` print machine-parseable tokens: `STATUS=`, `EXPERIMENT=`, `PARENT=`, `DECISION=`, `BEST=`, `DIRECTION=`, `PUBLIC=` / `PRIVATE=` / `LINEAGE=` (exit 0 keep/discard, 1 crash, 2 budget with `STATUS=budget_exceeded`).
+- `fork` prints `STATUS=fork` (+ PARENT/LINEAGE/BEST); `best --json` includes budget progress fields.
+- `score`/`baseline` emit `SNAPSHOT=` and `REVERTED=true|false` (plus `BEST_SNAPSHOT=` when reverted); CI runs `py_compile` under bash so Windows globs expand.
+- `state.json` / tokens include `schema_version` (2) and `MODE=mechanical-no-headless`; score/baseline print `OUTPUT_DIR=`.
+- Budget refusal prints full token block (`BEST=`, `CANDIDATES_*`, wall remaining); `references/machine-tokens.md` documents the parse surface.
+- `fork` emits full shared token set (`MODE`, `SCHEMA_VERSION`, `OUTPUT_DIR`, `BEST_EXPERIMENT`, `SNAPSHOT`, `REVERTED=false`).
+- Auto-migrate `results.tsv` headers when new columns are added so mid-run helper upgrades stay parseable.
+- `baseline --force` rotates `results.tsv` to `results.prev.<timestamp>.tsv` so experiment ids restart without duplicate rows.
+
+### Removed
+- Confirmed absence of stale `docs/superpowers/` scratch plan.
+
 ## [2.0.0] - 2026-06-17
 
 **The no-headless rebuild.** Autoresearch now runs entirely inside your active

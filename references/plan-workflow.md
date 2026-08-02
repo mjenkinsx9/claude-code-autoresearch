@@ -224,8 +224,8 @@ Question prompt:
       description: "Just show me the command, I'll run it myself later"
 ```
 
-If "Launch now -- unlimited": invoke `/autoresearch` with the configuration and keep the active harness in control of edits.
-If "Launch now -- bounded": ask for iteration count, store it as `max_iterations`, then invoke `/autoresearch` with the configuration and stop after that many `score` runs.
+If "Launch now -- unlimited": invoke `/autoresearch` with the configuration and keep the active harness in control of edits (still honor stop rules).
+If "Launch now -- bounded": ask for iteration count, pass it as `--max-experiments N` on baseline, then invoke `/autoresearch`. The helper exits `score` with code 2 + `BUDGET_EXCEEDED` when done; check `status --json` fields `candidates_remaining` / `budget_exhausted`.
 If "Copy config only": output the ready-to-paste command block and stop.
 
 Before launch, initialize the deterministic state manager:
@@ -234,8 +234,10 @@ Before launch, initialize the deterministic state manager:
 python scripts/autoresearch_loop.py baseline \
   --target {target_file} \
   --verify-command '{verify_command}' \
+  --metric {metric_name} \
   --direction {higher_or_lower} \
-  --guard-command '{guard_command_if_any}'
+  --guard-command '{guard_command_if_any}' \
+  --max-experiments {N_if_bounded}
 ```
 
 ## Metric Suggestion Database

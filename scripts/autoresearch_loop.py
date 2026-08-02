@@ -2,52 +2,84 @@
 """
 Autoresearch Agent loop helper — no-headless state manager.
 
-This script never invokes an LLM CLI. The active harness (Claude Code, Codex,
-Gemini CLI, Pi, Hermes, or another agent) performs the thinking and file edits
-inside its normal interactive/session context. This helper does only the
-repeatable, deterministic work:
-
-- run the mechanical verify command
-- extract a numeric metric
-- run an optional guard command
-- snapshot candidates and kept versions
-- keep improvements or revert regressions
-- append results.tsv
+This script never invokes an LLM CLI. The active harness performs thinking and
+file edits. This helper does deterministic verify/guard/snapshot/keep-discard.
 
 Typical flow:
 
-    python scripts/autoresearch_loop.py baseline \
-      --target target.md \
-      --verify-command './score.sh' \
+    python scripts/autoresearch_loop.py baseline \\
+      --target target.md \\
+      --verify-command './score.sh' \\
+      --metric Score \\
       --direction higher
 
-    # active agent makes exactly one change to target.md
-
-    python scripts/autoresearch_loop.py score \
-      --target target.md \
-      --description 'tightened routing examples'
+    python scripts/autoresearch_loop.py score \\
+      --target target.md \\
+      --description 'one focused change'
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
+import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+DEFAULT_TIMEOUT = 120
+MAX_SCOPED_FILES = 10
+MAX_TOTAL_BYTES_WARN = 500 * 1024
+BUDGET_EXIT_CODE = 2
+# Float comparison for metric ties / non-improvements (benchmark noise).
+TIE_REL_TOL = 1e-9
+TIE_ABS_TOL = 1e-12
+# Bump when state.json / results.tsv contract changes in a breaking way for consumers.
+STATE_SCHEMA_VERSION = 2
+HELPER_MODE = "mechanical-no-headless"
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def utc_now_iso() -> str:
+    """Timezone-aware UTC timestamp for state/TSV (always includes offset)."""
+    return utc_now().isoformat()
+
+
+def parse_timestamp(value: str) -> datetime:
+    """Parse ISO timestamps into UTC.
+
+    Aware values are converted to UTC. Naive values (legacy) are interpreted as
+    *local* wall-clock time, then converted to UTC — never treated as UTC.
+    Trailing ``Z`` is accepted as ``+00:00``.
+    """
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    dt = datetime.fromisoformat(raw)
+    if dt.tzinfo is None:
+        local_tz = datetime.now().astimezone().tzinfo
+        dt = dt.replace(tzinfo=local_tz)
+    return dt.astimezone(timezone.utc)
 
 RESULTS_HEADER = [
     "experiment",
     "score",
     "max_score",
     "best_score",
+    "private_score",
+    "decision_score",
     "status",
     "description",
     "timestamp",
@@ -55,6 +87,8 @@ RESULTS_HEADER = [
     "verify_command",
     "guard_command",
     "snapshot",
+    "parent_experiment",
+    "lineage",
 ]
 
 
@@ -74,27 +108,62 @@ class CommandResult:
         return "\n".join(part for part in (self.stdout, self.stderr) if part)
 
 
-def run_shell_command(command: str, cwd: str | None = None, timeout: int = 120) -> CommandResult:
-    """Run a user-supplied verification or guard command."""
+def run_shell_command(command: str, cwd: str | None = None, timeout: int | None = None) -> CommandResult:
+    if timeout is None:
+        timeout = DEFAULT_TIMEOUT
+    kwargs: dict[str, Any] = {
+        "args": command,
+        "shell": True,
+        "cwd": cwd,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+    }
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return CommandResult(command, result.returncode, result.stdout or "", result.stderr or "")
-    except subprocess.TimeoutExpired as exc:
+        process = subprocess.Popen(**kwargs)
+    except OSError as exc:
+        return CommandResult(command, 127, "", str(exc))
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        return CommandResult(command, process.returncode, stdout or "", stderr or "")
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(process)
+        try:
+            stdout, stderr = process.communicate(timeout=1)
+        except (subprocess.TimeoutExpired, ValueError, OSError):
+            stdout, stderr = "", ""
         return CommandResult(
             command,
             124,
-            exc.stdout or "",
-            f"command timed out after {timeout}s",
+            stdout or "",
+            (stderr or "") + ("" if not stderr else "\n") + f"command timed out after {timeout}s",
         )
-    except OSError as exc:
-        return CommandResult(command, 127, "", str(exc))
+
+
+def _kill_process_tree(process: subprocess.Popen[str]) -> None:
+    try:
+        if os.name != "nt" and process.pid:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                process.kill()
+        else:
+            process.kill()
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        process.wait(timeout=1)
+    except (subprocess.TimeoutExpired, ProcessLookupError, OSError):
+        try:
+            if os.name != "nt" and process.pid:
+                os.killpg(process.pid, signal.SIGKILL)
+            else:
+                process.kill()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
 
 def ensure_target_allowed(target: Path, allowed_root: Path) -> Path:
@@ -112,6 +181,53 @@ def ensure_target_allowed(target: Path, allowed_root: Path) -> Path:
     if not target.is_file():
         raise SystemExit(f"ERROR: --target {target} is not a file.")
     return target
+
+
+def sanitize_artifact_relpath(path_value: str | Path) -> Path:
+    normalized = str(path_value).replace("\\", "/")
+    parts = Path(normalized).parts
+    safe: list[str] = []
+    for part in parts:
+        if part in ("", ".", "/"):
+            continue
+        if part == "..":
+            continue
+        if not safe and ":" in part:
+            part = part.replace(":", "_")
+        safe.append(part)
+    if not safe:
+        return Path("unnamed_file")
+    return Path(*safe)
+
+
+def resolve_targets(args: argparse.Namespace, state: dict[str, Any] | None, allowed_root: Path) -> list[Path]:
+    if getattr(args, "targets", None):
+        raw = list(args.targets)
+    elif getattr(args, "target", None):
+        raw = [args.target]
+    elif state:
+        if state.get("targets"):
+            raw = list(state["targets"])
+        elif state.get("target"):
+            raw = [state["target"]]
+        else:
+            raise SystemExit("ERROR: no target in state; pass --target or --targets")
+    else:
+        raise SystemExit("ERROR: provide --target or --targets")
+    if len(raw) > MAX_SCOPED_FILES:
+        raise SystemExit(f"ERROR: too many targets ({len(raw)}); max is {MAX_SCOPED_FILES}")
+    targets = [ensure_target_allowed(Path(p), allowed_root) for p in raw]
+    # de-dupe resolved paths while preserving order
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for t in targets:
+        if t not in seen:
+            seen.add(t)
+            unique.append(t)
+    total = sum(t.stat().st_size for t in unique)
+    if total > MAX_TOTAL_BYTES_WARN:
+        print(f"WARNING: total target size {total} bytes exceeds {MAX_TOTAL_BYTES_WARN}", file=sys.stderr)
+    return unique
 
 
 def make_dirs(output_dir: Path) -> dict[str, Path]:
@@ -133,6 +249,76 @@ def results_path(output_dir: Path) -> Path:
     return output_dir / "results.tsv"
 
 
+def rotate_results_tsv(output_dir: Path) -> Path | None:
+    """Move ``results.tsv`` aside for ``baseline --force`` without clobbering archives.
+
+    Destination names use UTC timestamp + microseconds. If that path still
+    exists (same-µs double force, or clock skew), append a counter so prior
+    rotated logs are never overwritten by ``Path.rename`` replace semantics.
+    """
+    results = results_path(output_dir)
+    if not results.exists():
+        return None
+    stamp = utc_now().strftime("%Y%m%dT%H%M%S%fZ")
+    bak = output_dir / f"results.prev.{stamp}.tsv"
+    n = 0
+    while bak.exists():
+        n += 1
+        bak = output_dir / f"results.prev.{stamp}.{n}.tsv"
+    results.rename(bak)
+    return bak
+
+
+def existing_experiment_ids(output_dir: Path) -> set[str]:
+    """Experiment ids already present in results.tsv (for unique fork markers)."""
+    path = results_path(output_dir)
+    if not path.exists():
+        return set()
+    ids: set[str] = set()
+    with path.open(encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh, delimiter="\t"):
+            exp = (row.get("experiment") or "").strip()
+            if exp:
+                ids.add(exp)
+    return ids
+
+
+def allocate_fork_id(output_dir: Path) -> str:
+    """Allocate a unique ``fork-…`` experiment id for audit rows.
+
+    Second-precision stamps collided when several forks ran in the same second.
+    Use microseconds and, if needed, a counter against existing TSV ids.
+    """
+    used = existing_experiment_ids(output_dir)
+    stamp = utc_now().strftime("%Y%m%dT%H%M%S%f")
+    candidate = f"fork-{stamp}"
+    n = 0
+    while candidate in used:
+        n += 1
+        candidate = f"fork-{stamp}-{n}"
+    return candidate
+
+
+def resolve_parent_experiment(raw: Any, state: dict[str, Any]) -> int:
+    """Resolve ``--parent-experiment`` or fall back to state next/best parent.
+
+    Rejects non-integers and values ``< 1`` with a clean error (no traceback).
+    Accepts zero-padded strings like ``001``.
+    """
+    if raw is None or (isinstance(raw, str) and raw.strip() == ""):
+        return int(state.get("next_parent_experiment", state.get("best_experiment", 1)))
+    text = str(raw).strip()
+    try:
+        parent_id = int(text, 10)
+    except ValueError as exc:
+        raise SystemExit(
+            f"ERROR: invalid --parent-experiment {raw!r}; expected integer >= 1"
+        ) from exc
+    if parent_id < 1:
+        raise SystemExit(f"ERROR: --parent-experiment must be >= 1, got {parent_id}")
+    return parent_id
+
+
 def load_state(output_dir: Path) -> dict[str, Any]:
     path = state_path(output_dir)
     if not path.exists():
@@ -140,12 +326,17 @@ def load_state(output_dir: Path) -> dict[str, Any]:
             f"ERROR: no autoresearch state found at {path}. "
             "Run the 'baseline' command first."
         )
-    return json.loads(path.read_text())
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"ERROR: corrupt state.json at {path}: {exc}") from exc
 
 
 def save_state(output_dir: Path, state: dict[str, Any]) -> None:
     path = state_path(output_dir)
-    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def sanitize_tsv_field(value: Any) -> str:
@@ -153,32 +344,102 @@ def sanitize_tsv_field(value: Any) -> str:
     return "".join(" " if ch in ("\t", "\n", "\r") else ch for ch in s if ch in ("\t", "\n", "\r") or ord(ch) >= 32).strip()
 
 
+def token_value(value: Any) -> str:
+    """Single-line value for ``KEY=value`` tokens (no CR/LF/TAB)."""
+    return sanitize_tsv_field(value)
+
+
+def print_token(key: str, value: Any) -> None:
+    """Print a machine token; skip empty free-text values."""
+    text = token_value(value)
+    if text == "" and key in {"DESCRIPTION", "LINEAGE"}:
+        return
+    print(f"{key}={text}")
+
+
+def ensure_results_schema(path: Path) -> None:
+    """Rewrite results.tsv if its header is missing columns from RESULTS_HEADER.
+
+    Long-running runs that upgrade the helper mid-stream would otherwise append
+    wide rows under a stale header and break DictReader consumers.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return
+    with path.open(encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh, delimiter="\t")
+        old_fields = list(reader.fieldnames or [])
+        if old_fields == RESULTS_HEADER:
+            return
+        rows = list(reader)
+    tmp = path.with_suffix(".tsv.migrate")
+    with tmp.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=RESULTS_HEADER, delimiter="\t", extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: sanitize_tsv_field(row.get(key, "")) for key in RESULTS_HEADER})
+    os.replace(tmp, path)
+    print(
+        f"Migrated results.tsv header ({len(old_fields)} -> {len(RESULTS_HEADER)} columns)",
+        file=sys.stderr,
+    )
+
+
 def append_results(output_dir: Path, row: dict[str, Any]) -> None:
     path = results_path(output_dir)
-    exists = path.exists()
-    with path.open("a", newline="") as fh:
+    ensure_results_schema(path)
+    exists = path.exists() and path.stat().st_size > 0
+    with path.open("a", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=RESULTS_HEADER, delimiter="\t", extrasaction="ignore")
         if not exists:
             writer.writeheader()
         writer.writerow({key: sanitize_tsv_field(row.get(key, "")) for key in RESULTS_HEADER})
 
 
-def metric_from_output(output: str, metric_regex: str | None = None) -> float:
-    """Extract a numeric metric from command output."""
+def resolve_metric_spec(
+    metric_regex: str | None = None,
+    metric_name: str | None = None,
+) -> tuple[str | None, str | None]:
     if metric_regex:
-        match = re.search(metric_regex, output, re.MULTILINE | re.DOTALL)
-        if not match:
-            raise ValueError(f"metric regex did not match: {metric_regex!r}")
+        return metric_regex, None
+    if metric_name:
+        return None, metric_name
+    return None, None
+
+
+def metric_from_output(
+    output: str,
+    metric_regex: str | None = None,
+    metric_name: str | None = None,
+) -> float:
+    regex, name = resolve_metric_spec(metric_regex=metric_regex, metric_name=metric_name)
+    if regex:
+        matches = list(re.finditer(regex, output, re.MULTILINE | re.DOTALL))
+        if not matches:
+            raise ValueError(f"metric regex did not match: {regex!r}")
+        match = matches[-1]
         raw = match.group(1) if match.groups() else match.group(0)
+    elif name:
+        pattern = (
+            rf"(?im)(?:^|\b){re.escape(name)}\s*[:=]\s*"
+            rf"([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)"
+        )
+        matches = list(re.finditer(pattern, output))
+        if not matches:
+            raise ValueError(f"metric name {name!r} not found in verify output")
+        raw = matches[-1].group(1)
     else:
         numbers = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", output)
         if not numbers:
             raise ValueError("no number found in verify output")
         raw = numbers[-1]
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError as exc:
         raise ValueError(f"extracted metric is not numeric: {raw!r}") from exc
+    if not math.isfinite(value):
+        # nan/inf break keep/discard (nan comparisons are always false) and pollute TSV.
+        raise ValueError(f"extracted metric is not finite: {raw!r}")
+    return value
 
 
 def format_score(score: float | None) -> str:
@@ -189,35 +450,231 @@ def format_score(score: float | None) -> str:
     return f"{score:.6g}"
 
 
-def is_improvement(score: float, best_score: float, direction: str) -> bool:
+def is_tie(
+    score: float,
+    best_score: float,
+    *,
+    rel_tol: float = TIE_REL_TOL,
+    abs_tol: float = TIE_ABS_TOL,
+) -> bool:
+    """True when scores are effectively equal (float-safe)."""
+    return math.isclose(float(score), float(best_score), rel_tol=rel_tol, abs_tol=abs_tol)
+
+
+def is_improvement(
+    score: float,
+    best_score: float,
+    direction: str,
+    *,
+    rel_tol: float = TIE_REL_TOL,
+    abs_tol: float = TIE_ABS_TOL,
+) -> bool:
+    """True when score is strictly better than best after float-tie tolerance."""
+    if is_tie(score, best_score, rel_tol=rel_tol, abs_tol=abs_tol):
+        return False
     if direction == "higher":
-        return score > best_score
+        return float(score) > float(best_score)
     if direction == "lower":
-        return score < best_score
+        return float(score) < float(best_score)
     raise ValueError(f"unsupported direction: {direction}")
 
 
-def is_tie(score: float, best_score: float) -> bool:
-    return score == best_score
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
-def snapshot_target(target: Path, snapshots_dir: Path, experiment: int, status: str) -> Path:
-    suffix = target.suffix or ".txt"
-    destination = snapshots_dir / f"experiment_{experiment:03d}_{status}{suffix}"
-    shutil.copy2(target, destination)
-    return destination
+def content_hash_pairs(pairs: list[tuple[str, bytes]]) -> str:
+    """Canonical content hash: sort by path string, then path\\0bytes\\0."""
+    digest = hashlib.sha256()
+    for path, data in sorted(pairs, key=lambda item: item[0]):
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(data)
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
-def revert_to_snapshot(target: Path, snapshot: str) -> None:
-    shutil.copy2(snapshot, target)
+def combined_targets_sha256(targets: list[Path]) -> str:
+    pairs = [(str(t.resolve()), t.read_bytes()) for t in targets]
+    return content_hash_pairs(pairs)
 
 
-def run_verify(args: argparse.Namespace, verify_command: str, metric_regex: str | None) -> tuple[CommandResult, float | None, str | None]:
+def resolve_artifact_under_snapshot(snap_path: Path, artifact_path: str) -> Path:
+    """Resolve artifact path and require it stays under the snapshot directory."""
+    if not artifact_path or artifact_path.startswith("/") or Path(artifact_path).is_absolute():
+        raise SystemExit(
+            f"ERROR: snapshot artifact_path must be relative (got {artifact_path!r})"
+        )
+    # Reject parent traversal before join
+    parts = Path(artifact_path).parts
+    if ".." in parts:
+        raise SystemExit(f"ERROR: snapshot artifact_path must not contain '..' (got {artifact_path!r})")
+    candidate = (snap_path / artifact_path).resolve()
+    snap_resolved = snap_path.resolve()
+    try:
+        candidate.relative_to(snap_resolved)
+    except ValueError:
+        raise SystemExit(
+            f"ERROR: snapshot artifact {candidate} escapes snapshot dir {snap_resolved}"
+        )
+    if not candidate.is_file():
+        raise SystemExit(f"ERROR: snapshot artifact is not a file: {candidate}")
+    return candidate
+
+
+def snapshot_bundle_sha256(snap_path: Path, manifest: dict[str, Any]) -> str:
+    pairs: list[tuple[str, bytes]] = []
+    for entry in manifest.get("files", []):
+        art = resolve_artifact_under_snapshot(snap_path, entry["artifact_path"])
+        pairs.append((entry["path"], art.read_bytes()))
+    return content_hash_pairs(pairs)
+
+
+def total_size(targets: list[Path]) -> int:
+    return sum(t.stat().st_size for t in targets)
+
+
+def snapshot_targets(targets: list[Path], snapshots_dir: Path, experiment: int, status: str) -> Path:
+    dest = snapshots_dir / f"experiment_{experiment:03d}_{status}"
+    if dest.exists():
+        shutil.rmtree(dest)
+    files_dir = dest / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    manifest_files: list[dict[str, Any]] = []
+    for target in targets:
+        # Prefer basename when unique; else full sanitized absolute-ish path
+        rel = Path(target.name)
+        artifact = files_dir / sanitize_artifact_relpath(rel)
+        # disambiguate collisions
+        if artifact.exists():
+            rel = sanitize_artifact_relpath(str(target).lstrip("/"))
+            artifact = files_dir / rel
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(target, artifact)
+        manifest_files.append({
+            "path": str(target.resolve()),
+            "artifact_path": str(artifact.relative_to(dest)),
+            "sha256": file_sha256(artifact),
+            "bytes": artifact.stat().st_size,
+        })
+    manifest = {
+        "type": "step_code_snapshot",
+        "experiment": experiment,
+        "status": status,
+        "created_at": utc_now_iso(),
+        "files": manifest_files,
+    }
+    (dest / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return dest
+
+
+def ensure_snapshot_allowed(snapshot: Path, snapshots_dir: Path) -> Path:
+    snapshot = snapshot.resolve()
+    snapshots_dir = snapshots_dir.resolve()
+    try:
+        snapshot.relative_to(snapshots_dir)
+    except ValueError:
+        raise SystemExit(
+            f"ERROR: best_snapshot {snapshot} is not under snapshots dir {snapshots_dir}. "
+            "Refusing to revert from a path outside the run sandbox."
+        )
+    if not snapshot.exists():
+        raise SystemExit(f"ERROR: best_snapshot {snapshot} does not exist.")
+    return snapshot
+
+
+def revert_targets_from_snapshot(
+    targets: list[Path],
+    snapshot: str,
+    snapshots_dir: Path,
+    *,
+    expected_sha256: str | None = None,
+    strict_snapshots: bool = False,
+) -> None:
+    snap_path = ensure_snapshot_allowed(Path(snapshot), snapshots_dir)
+
+    # Legacy flat single-file snapshot support
+    if snap_path.is_file():
+        if len(targets) != 1:
+            raise SystemExit("ERROR: legacy flat snapshot only supports a single target file")
+        if expected_sha256:
+            actual = file_sha256(snap_path)
+            if actual != expected_sha256:
+                msg = f"snapshot hash mismatch for {snap_path}: expected {expected_sha256}, got {actual}"
+                if strict_snapshots:
+                    raise SystemExit(f"ERROR: {msg}")
+                print(f"WARNING: {msg}", file=sys.stderr)
+        shutil.copy2(snap_path, targets[0])
+        return
+
+    manifest_path = snap_path / "manifest.json"
+    if not manifest_path.exists():
+        raise SystemExit(f"ERROR: snapshot directory missing manifest.json: {snap_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    by_path = {entry["path"]: entry for entry in manifest.get("files", [])}
+    # Always validate artifact paths are sandboxed; verify content hashes.
+    for entry in manifest.get("files", []):
+        art = resolve_artifact_under_snapshot(snap_path, entry["artifact_path"])
+        if entry.get("sha256") and file_sha256(art) != entry.get("sha256"):
+            msg = f"snapshot artifact hash mismatch: {art}"
+            if strict_snapshots:
+                raise SystemExit(f"ERROR: {msg}")
+            print(f"WARNING: {msg}", file=sys.stderr)
+
+    if expected_sha256:
+        actual = snapshot_bundle_sha256(snap_path, manifest)
+        if actual != expected_sha256:
+            msg = (
+                f"snapshot bundle hash mismatch for {snap_path}: "
+                f"expected {expected_sha256}, got {actual}"
+            )
+            if strict_snapshots:
+                raise SystemExit(f"ERROR: {msg}")
+            print(f"WARNING: {msg}", file=sys.stderr)
+
+    for target in targets:
+        entry = by_path.get(str(target.resolve())) or by_path.get(str(target))
+        if entry is None:
+            matches = [e for e in manifest.get("files", []) if Path(e["path"]).name == target.name]
+            if len(matches) == 1:
+                entry = matches[0]
+            else:
+                raise SystemExit(f"ERROR: snapshot does not contain target {target}")
+        art = resolve_artifact_under_snapshot(snap_path, entry["artifact_path"])
+        shutil.copy2(art, target)
+
+
+def resolve_timeout(args: argparse.Namespace, state: dict[str, Any] | None = None) -> int:
+    """Resolve verify/guard timeout in seconds (must be >= 1).
+
+    CLI ``--timeout`` wins when set; else sealed state; else ``DEFAULT_TIMEOUT``.
+    Values ``<= 0`` used to reach ``communicate(timeout=-1)`` and surface as a
+    confusing immediate timeout rather than a config error.
+    """
+    if getattr(args, "timeout", None) is not None:
+        value = int(args.timeout)
+    elif state is not None and state.get("timeout") not in (None, ""):
+        value = int(state["timeout"])
+    else:
+        value = DEFAULT_TIMEOUT
+    if value < 1:
+        raise SystemExit(f"ERROR: --timeout must be >= 1 second, got {value}")
+    return value
+
+
+def run_verify(
+    args: argparse.Namespace,
+    verify_command: str,
+    metric_regex: str | None,
+    metric_name: str | None = None,
+) -> tuple[CommandResult, float | None, str | None]:
     result = run_shell_command(verify_command, cwd=args.cwd, timeout=args.timeout)
     if not result.ok:
         return result, None, f"verify command exited {result.returncode}"
     try:
-        score = metric_from_output(result.combined_output, metric_regex)
+        score = metric_from_output(result.combined_output, metric_regex=metric_regex, metric_name=metric_name)
         return result, score, None
     except ValueError as exc:
         return result, None, str(exc)
@@ -242,25 +699,315 @@ def command_output_file(output_dir: Path, experiment: int, name: str, result: Co
         f"$ {result.command}\n"
         f"exit={result.returncode}\n\n"
         f"--- stdout ---\n{result.stdout}\n\n"
-        f"--- stderr ---\n{result.stderr}\n"
+        f"--- stderr ---\n{result.stderr}\n",
+        encoding="utf-8",
     )
+
+
+def _cli_config_overrides(args: argparse.Namespace, state: dict[str, Any]) -> list[str]:
+    changes: list[str] = []
+    if args.verify_command is not None and args.verify_command != state.get("verify_command"):
+        changes.append("verify_command")
+    if args.direction is not None and args.direction != state.get("direction"):
+        changes.append("direction")
+    if args.metric_regex is not None and (args.metric_regex or "") != (state.get("metric_regex") or ""):
+        changes.append("metric_regex")
+    if getattr(args, "metric", None) is not None and (args.metric or "") != (state.get("metric") or ""):
+        changes.append("metric")
+    if args.guard_command is not None and (args.guard_command or "") != (state.get("guard_command") or ""):
+        changes.append("guard_command")
+    priv = getattr(args, "private_verify_command", None)
+    if priv is not None and (priv or "") != (state.get("private_verify_command") or ""):
+        changes.append("private_verify_command")
+    if getattr(args, "max_score", None) is not None:
+        cli_max = float(args.max_score)
+        state_max = state.get("max_score", "")
+        if state_max in ("", None):
+            changes.append("max_score")
+        else:
+            try:
+                if float(state_max) != cli_max:
+                    changes.append("max_score")
+            except (TypeError, ValueError):
+                changes.append("max_score")
+    if args.cwd is not None:
+        state_cwd = (state.get("cwd") or "").strip()
+        cli_cwd = str(Path(args.cwd).resolve())
+        sealed_cwd = str(Path(state_cwd).resolve()) if state_cwd else ""
+        if sealed_cwd and cli_cwd != sealed_cwd:
+            changes.append("cwd")
+        elif not sealed_cwd and cli_cwd != str(Path.cwd().resolve()):
+            # Baseline stored empty only if cwd was default; still seal non-default CLI cwd
+            changes.append("cwd")
+    return changes
+
+
+def _targets_override_requested(args: argparse.Namespace, state: dict[str, Any], allowed_root: Path) -> tuple[list[Path], bool]:
+    """Return (targets, changed). When CLI omits target(s), use state. Seal changes."""
+    state_raw = state.get("targets") or ([state["target"]] if state.get("target") else [])
+    state_targets = [Path(p).resolve() for p in state_raw]
+    cli_raw: list[str] | None = None
+    if getattr(args, "targets", None):
+        cli_raw = list(args.targets)
+    elif getattr(args, "target", None):
+        cli_raw = [args.target]
+    if cli_raw is None:
+        return [ensure_target_allowed(t, allowed_root) for t in state_targets], False
+    cli_targets = [ensure_target_allowed(Path(p), allowed_root) for p in cli_raw]
+    cli_set = sorted(t.resolve() for t in cli_targets)
+    changed = cli_set != sorted(state_targets)
+    return cli_targets, changed
+
+
+def validate_budget_limits(
+    max_experiments: Any = None,
+    max_wall_seconds: Any = None,
+) -> None:
+    """Reject negative budget caps (0 means unlimited; omit means unlimited)."""
+    if max_experiments not in (None, ""):
+        try:
+            exp_i = int(max_experiments)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                f"ERROR: --max-experiments must be an integer >= 0, got {max_experiments!r}"
+            ) from exc
+        if exp_i < 0:
+            raise SystemExit(f"ERROR: --max-experiments must be >= 0, got {exp_i}")
+    if max_wall_seconds not in (None, ""):
+        try:
+            wall_f = float(max_wall_seconds)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                f"ERROR: --max-wall-seconds must be a number >= 0, got {max_wall_seconds!r}"
+            ) from exc
+        if wall_f < 0:
+            raise SystemExit(f"ERROR: --max-wall-seconds must be >= 0, got {wall_f}")
+
+
+def validate_max_score(max_score: Any) -> None:
+    """Reject negative known maxima (blank/omit means unknown)."""
+    if max_score in (None, ""):
+        return
+    try:
+        value = float(max_score)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"ERROR: --max-score must be a number >= 0, got {max_score!r}") from exc
+    if not math.isfinite(value):
+        raise SystemExit(f"ERROR: --max-score must be finite, got {max_score!r}")
+    if value < 0:
+        raise SystemExit(f"ERROR: --max-score must be >= 0, got {value}")
+
+
+def check_budget(state: dict[str, Any]) -> str | None:
+    """Return error message if budget exhausted, else None.
+
+    ``max_experiments`` counts candidate score runs *after* baseline.
+    """
+    max_exp = state.get("max_experiments")
+    if max_exp not in (None, "", 0, "0"):
+        max_exp_i = int(max_exp)
+        if max_exp_i < 0:
+            return (
+                f"BUDGET_EXCEEDED: invalid max_experiments={max_exp_i} "
+                f"(must be >= 0; refuse score until baseline is re-run)"
+            )
+        candidates_done = max(0, int(state.get("last_experiment", 1)) - 1)
+        if candidates_done >= max_exp_i:
+            return (
+                f"BUDGET_EXCEEDED: max_experiments={max_exp_i} candidate scores already completed "
+                f"(last_experiment={state.get('last_experiment')})"
+            )
+    max_wall = state.get("max_wall_seconds")
+    if max_wall not in (None, "", 0, "0"):
+        try:
+            wall_f = float(max_wall)
+        except (TypeError, ValueError):
+            return (
+                f"BUDGET_EXCEEDED: invalid max_wall_seconds={max_wall!r}; "
+                f"refuse score until baseline is re-run"
+            )
+        if wall_f < 0:
+            return (
+                f"BUDGET_EXCEEDED: invalid max_wall_seconds={wall_f} "
+                f"(must be >= 0; refuse score until baseline is re-run)"
+            )
+        created = state.get("created_at")
+        if created:
+            try:
+                created_dt = parse_timestamp(str(created))
+                elapsed = (utc_now() - created_dt).total_seconds()
+                if elapsed > wall_f:
+                    return (
+                        f"BUDGET_EXCEEDED: max_wall_seconds={max_wall} elapsed={elapsed:.1f}s"
+                    )
+            except ValueError as exc:
+                return (
+                    f"BUDGET_EXCEEDED: unparseable created_at={created!r} ({exc}); "
+                    f"refusing score while max_wall_seconds={max_wall} is set"
+                )
+    return None
+
+
+def budget_progress(state: dict[str, Any]) -> dict[str, Any]:
+    """Candidate + wall-clock budget progress for status (harness stop checks)."""
+    last = int(state.get("last_experiment", 1) or 1)
+    candidates_done = max(0, last - 1)
+    max_exp = state.get("max_experiments")
+    max_exp_i: int | None
+    if max_exp in (None, "", 0, "0"):
+        max_exp_i = None
+        remaining: int | None = None
+        candidates_exhausted = False
+    else:
+        max_exp_i = int(max_exp)
+        remaining = max(0, max_exp_i - candidates_done)
+        candidates_exhausted = candidates_done >= max_exp_i
+
+    max_wall = state.get("max_wall_seconds")
+    wall_elapsed: float | None = None
+    wall_remaining: float | None = None
+    wall_exhausted = False
+    max_wall_f: float | None = None
+    if max_wall not in (None, "", 0, "0"):
+        max_wall_f = float(max_wall)
+        created = state.get("created_at")
+        if created:
+            try:
+                created_dt = parse_timestamp(str(created))
+                wall_elapsed = max(0.0, (utc_now() - created_dt).total_seconds())
+                wall_remaining = max(0.0, max_wall_f - wall_elapsed)
+                wall_exhausted = wall_elapsed > max_wall_f
+            except ValueError:
+                wall_elapsed = None
+                wall_remaining = None
+                wall_exhausted = True  # fail-closed for status display
+
+    return {
+        "candidates_done": candidates_done,
+        "candidates_remaining": remaining,
+        "max_experiments": max_exp_i,
+        "max_wall_seconds": max_wall_f,
+        "wall_elapsed_seconds": wall_elapsed,
+        "wall_remaining_seconds": wall_remaining,
+        "wall_budget_exhausted": wall_exhausted,
+        "budget_exhausted": candidates_exhausted or wall_exhausted,
+    }
+
+
+def print_budget_tokens(state: dict[str, Any]) -> None:
+    """Emit budget progress KEY=value lines for harness stop checks.
+
+    Always prints ``CANDIDATES_DONE``. Remaining/wall tokens appear only when
+    those caps were set on baseline (same surface as ``STATUS=budget_exceeded``).
+    """
+    progress = budget_progress(state)
+    print(f"CANDIDATES_DONE={progress['candidates_done']}")
+    if progress["candidates_remaining"] is not None:
+        print(f"CANDIDATES_REMAINING={progress['candidates_remaining']}")
+    if progress["wall_remaining_seconds"] is not None:
+        print(f"WALL_REMAINING_SECONDS={progress['wall_remaining_seconds']:.1f}")
+
+
+def coerce_json_number(value: Any) -> float | int | None:
+    """Coerce score-like state values to int/float for JSON agent surfaces."""
+    if value is None or value == "":
+        return None
+    try:
+        val = float(value)
+    except (TypeError, ValueError):
+        return value  # leave unparseable values visible
+    if not math.isfinite(val):
+        return value
+    return int(val) if val.is_integer() else val
+
+
+def coerce_json_int(value: Any) -> int | None:
+    """Coerce experiment ids / counters to int for JSON agent surfaces."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return value
+
+
+def state_public_dict(state: dict[str, Any]) -> dict[str, Any]:
+    targets = state.get("targets") or ([state["target"]] if state.get("target") else [])
+    progress = budget_progress(state)
+    return {
+        "target": state.get("target"),
+        "targets": targets,
+        "best_score": coerce_json_number(state.get("best_score")),
+        "best_experiment": coerce_json_int(state.get("best_experiment")),
+        "last_experiment": coerce_json_int(state.get("last_experiment")),
+        "direction": state.get("direction"),
+        # Prefer budget_progress parsing (null when unlimited) over raw state strings
+        "max_experiments": progress["max_experiments"],
+        "max_wall_seconds": progress["max_wall_seconds"],
+        "candidates_done": progress["candidates_done"],
+        "candidates_remaining": progress["candidates_remaining"],
+        "wall_elapsed_seconds": progress["wall_elapsed_seconds"],
+        "wall_remaining_seconds": progress["wall_remaining_seconds"],
+        "wall_budget_exhausted": progress["wall_budget_exhausted"],
+        "budget_exhausted": progress["budget_exhausted"],
+        "metric": state.get("metric"),
+        "mode": state.get("mode", HELPER_MODE),
+        "schema_version": int(state.get("schema_version", STATE_SCHEMA_VERSION)),
+        "best_snapshot": state.get("best_snapshot"),
+        "lineage": state.get("lineage", ""),
+        "next_parent_experiment": coerce_json_int(state.get("next_parent_experiment")),
+        "private_verify_command": state.get("private_verify_command") or "",
+        "instructions": state.get("instructions") or "",
+    }
 
 
 def cmd_baseline(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).resolve()
     paths = make_dirs(output_dir)
-    target = ensure_target_allowed(Path(args.target), Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve())
+    allowed = Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve()
+    targets = resolve_targets(args, None, allowed)
     args.cwd = args.cwd or str(Path.cwd())
+    args.timeout = resolve_timeout(args)
 
-    if state_path(output_dir).exists() and not args.force:
+    state_exists = state_path(output_dir).exists()
+    if state_exists and not args.force:
         raise SystemExit(f"ERROR: {state_path(output_dir)} already exists. Pass --force to replace the baseline.")
 
-    verify_result, score, verify_error = run_verify(args, args.verify_command, args.metric_regex)
+    # Rotate any prior results.tsv so experiment ids restart without duplicate 001 rows.
+    # Covers --force restarts and orphan logs (results.tsv without state.json).
+    if args.force or (not state_exists and results_path(output_dir).exists()):
+        rotated = rotate_results_tsv(output_dir)
+        if rotated is not None:
+            print(f"Rotated previous results to {rotated}", file=sys.stderr)
+        # Leave prior snapshots in place for audit; new baseline overwrites experiment_001_keep/
+
+    metric_name = args.metric or None
+    metric_regex = args.metric_regex or None
+    if not metric_name and not metric_regex:
+        print(
+            "WARNING: no --metric or --metric-regex set; using last-number fallback. "
+            "Prefer --metric Score (or similar) so progress logs cannot steal the metric.",
+            file=sys.stderr,
+        )
+
+    verify_result, score, verify_error = run_verify(args, args.verify_command, metric_regex, metric_name)
     command_output_file(output_dir, 1, "verify", verify_result)
     if verify_error:
         print(f"ERROR: invalid baseline verify result: {verify_error}", file=sys.stderr)
         print(verify_result.combined_output[-1000:], file=sys.stderr)
         return 1
+
+    private_score = None
+    private_cmd = getattr(args, "private_verify_command", None) or ""
+    if private_cmd:
+        priv_result, private_score, priv_error = run_verify(args, private_cmd, metric_regex, metric_name)
+        command_output_file(output_dir, 1, "private_verify", priv_result)
+        if priv_error:
+            print(f"ERROR: invalid baseline private verify: {priv_error}", file=sys.stderr)
+            return 1
+        decision_score = private_score
+    else:
+        decision_score = score
 
     guard_result, guard_error = run_guard(args, args.guard_command)
     command_output_file(output_dir, 1, "guard", guard_result)
@@ -270,38 +1017,86 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             print(guard_result.combined_output[-1000:], file=sys.stderr)
         return 1
 
-    snapshot = snapshot_target(target, paths["snapshots"], 1, "keep")
+    snapshot = snapshot_targets(targets, paths["snapshots"], 1, "keep")
+    instructions = getattr(args, "instructions", None) or ""
+    if instructions and Path(instructions).is_file():
+        instructions = str(Path(instructions).resolve())
+
+    max_experiments = getattr(args, "max_experiments", None)
+    max_wall_seconds = getattr(args, "max_wall_seconds", None)
+    validate_budget_limits(max_experiments, max_wall_seconds)
+    max_score = getattr(args, "max_score", None)
+    validate_max_score(max_score)
+    lineage = getattr(args, "lineage", None) or ""
+
     state = {
-        "target": str(target),
+        "target": str(targets[0]),
+        "targets": [str(t) for t in targets],
         "direction": args.direction,
         "verify_command": args.verify_command,
+        "private_verify_command": private_cmd,
         "guard_command": args.guard_command or "",
-        "metric_regex": args.metric_regex or "",
+        "metric": metric_name or "",
+        "metric_regex": metric_regex or "",
+        "max_score": max_score if max_score is not None else "",
         "cwd": args.cwd or "",
         "timeout": args.timeout,
-        "best_score": score,
-        "best_size": target.stat().st_size,
+        "best_score": decision_score,
+        "best_public_score": score,
+        "best_private_score": private_score if private_score is not None else "",
+        "best_size": total_size(targets),
         "best_snapshot": str(snapshot),
+        "best_snapshot_sha256": combined_targets_sha256(targets),
         "best_experiment": 1,
         "last_experiment": 1,
-        "created_at": datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-        "mode": "mechanical-no-headless",
+        "next_parent_experiment": 1,
+        "lineage": lineage,
+        "instructions": instructions,
+        "max_experiments": max_experiments if max_experiments is not None else "",
+        "max_wall_seconds": max_wall_seconds if max_wall_seconds is not None else "",
+        "created_at": utc_now_iso(),
+        "updated_at": utc_now_iso(),
+        "mode": HELPER_MODE,
+        "schema_version": STATE_SCHEMA_VERSION,
     }
     save_state(output_dir, state)
     append_results(output_dir, {
         "experiment": "001",
         "score": format_score(score),
-        "best_score": format_score(score),
+        "max_score": format_score(float(max_score)) if max_score is not None else "",
+        "best_score": format_score(decision_score),
+        "private_score": format_score(private_score),
+        "decision_score": format_score(decision_score),
         "status": "keep",
         "description": args.description or "baseline",
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": utc_now_iso(),
         "direction": args.direction,
         "verify_command": args.verify_command,
         "guard_command": args.guard_command or "",
         "snapshot": str(snapshot),
+        "parent_experiment": "",
+        "lineage": lineage,
     })
-    print(f"Baseline recorded: {format_score(score)} ({args.direction} is better)")
+    print(f"Baseline recorded: {format_score(decision_score)} ({args.direction} is better)")
+    print("STATUS=keep")
+    print(f"MODE={HELPER_MODE}")
+    print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
+    print(f"OUTPUT_DIR={output_dir}")
+    print("EXPERIMENT=001")
+    print("PARENT=")
+    print(f"DECISION={format_score(decision_score)}")
+    print(f"BEST={format_score(decision_score)}")
+    print(f"DIRECTION={args.direction}")
+    print(f"PUBLIC={format_score(score)}")
+    if private_cmd:
+        print(f"PRIVATE={format_score(private_score)}")
+        print(f"Public score: {format_score(score)} | Private score: {format_score(private_score)}")
+    print(f"SNAPSHOT={snapshot}")
+    print("REVERTED=false")
+    print_token("DESCRIPTION", args.description or "baseline")
+    if lineage:
+        print_token("LINEAGE", lineage)
+    print_budget_tokens(state)
     print(f"Snapshot: {snapshot}")
     return 0
 
@@ -310,126 +1105,506 @@ def cmd_score(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).resolve()
     paths = make_dirs(output_dir)
     state = load_state(output_dir)
-    target = ensure_target_allowed(Path(args.target or state["target"]), Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve())
+
+    budget_err = check_budget(state)
+    if budget_err:
+        print(f"ERROR: {budget_err}", file=sys.stderr)
+        print("STATUS=budget_exceeded")
+        print(f"MODE={HELPER_MODE}")
+        print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
+        print(f"OUTPUT_DIR={output_dir}")
+        print(f"BEST={format_score(float(state.get('best_score', 0)))}")
+        print(f"BEST_EXPERIMENT={int(state.get('best_experiment', 1)):03d}")
+        print_budget_tokens(state)
+        return BUDGET_EXIT_CODE
+
+    allowed = Path(args.allowed_root).resolve() if args.allowed_root else Path.cwd().resolve()
+    targets, targets_changed = _targets_override_requested(args, state, allowed)
+
+    overrides = _cli_config_overrides(args, state)
+    if targets_changed:
+        overrides = list(overrides) + ["targets"]
+    if overrides and not getattr(args, "allow_config_change", False):
+        raise SystemExit(
+            "ERROR: sealed config change refused for: "
+            + ", ".join(overrides)
+            + ". Re-run with --allow-config-change if intentional."
+        )
+    # Always revert the sealed full target set from state unless an allowed override changed it
+    if not targets_changed:
+        state_raw = state.get("targets") or ([state["target"]] if state.get("target") else [])
+        targets = [ensure_target_allowed(Path(p), allowed) for p in state_raw]
 
     experiment = int(state.get("last_experiment", 1)) + 1
-    direction = args.direction or state["direction"]
-    verify_command = args.verify_command or state["verify_command"]
+    parent_id = resolve_parent_experiment(
+        getattr(args, "parent_experiment", None),
+        state,
+    )
+
+    direction = args.direction if args.direction is not None else state["direction"]
+    verify_command = args.verify_command if args.verify_command is not None else state["verify_command"]
     guard_command = args.guard_command if args.guard_command is not None else state.get("guard_command", "")
     metric_regex = args.metric_regex if args.metric_regex is not None else state.get("metric_regex", "")
     metric_regex = metric_regex or None
+    metric_name = args.metric if getattr(args, "metric", None) is not None else state.get("metric", "")
+    metric_name = metric_name or None
+    private_cmd = (
+        args.private_verify_command
+        if getattr(args, "private_verify_command", None) is not None
+        else state.get("private_verify_command", "")
+    ) or ""
+    lineage = getattr(args, "lineage", None)
+    if lineage is None:
+        lineage = state.get("lineage", "") or ""
     args.cwd = args.cwd if args.cwd is not None else (state.get("cwd") or None)
-    args.timeout = args.timeout if args.timeout != 120 else int(state.get("timeout", args.timeout))
+    args.timeout = resolve_timeout(args, state)
 
-    verify_result, score, verify_error = run_verify(args, verify_command, metric_regex)
+    if getattr(args, "instructions", None) is not None:
+        instructions = args.instructions
+        if instructions and Path(instructions).is_file():
+            instructions = str(Path(instructions).resolve())
+        state["instructions"] = instructions
+
+    verify_result, public_score, verify_error = run_verify(args, verify_command, metric_regex, metric_name)
     command_output_file(output_dir, experiment, "verify", verify_result)
 
+    private_score = None
     status = "discard"
     reason = args.description or f"experiment {experiment:03d}"
-    guard_result: CommandResult | None = None
     candidate_snapshot_status = "discard"
+    decision_score: float | None = None
 
     if verify_error:
         status = "crash"
         reason = f"{reason} — verify failed: {verify_error}"
         candidate_snapshot_status = "crash"
     else:
-        guard_result, guard_error = run_guard(args, guard_command)
-        command_output_file(output_dir, experiment, "guard", guard_result)
-        if guard_error:
-            status = "crash"
-            reason = f"{reason} — guard failed: {guard_error}"
-            candidate_snapshot_status = "crash"
-        else:
-            best_score = float(state["best_score"])
-            current_size = target.stat().st_size
-            best_size = int(state.get("best_size", current_size))
-            if is_improvement(float(score), best_score, direction):
-                status = "keep"
-                candidate_snapshot_status = "keep"
-            elif is_tie(float(score), best_score) and current_size < best_size:
-                status = "keep"
-                candidate_snapshot_status = "keep"
-                reason = f"{reason} — tie on score, simpler target"
+        if private_cmd:
+            priv_result, private_score, priv_error = run_verify(args, private_cmd, metric_regex, metric_name)
+            command_output_file(output_dir, experiment, "private_verify", priv_result)
+            if priv_error:
+                status = "crash"
+                reason = f"{reason} — private verify failed: {priv_error}"
+                candidate_snapshot_status = "crash"
             else:
-                status = "discard"
-                candidate_snapshot_status = "discard"
+                decision_score = private_score
+        else:
+            decision_score = public_score
 
-    snapshot = snapshot_target(target, paths["snapshots"], experiment, candidate_snapshot_status)
+        if status != "crash":
+            guard_result, guard_error = run_guard(args, guard_command)
+            command_output_file(output_dir, experiment, "guard", guard_result)
+            if guard_error:
+                status = "crash"
+                reason = f"{reason} — guard failed: {guard_error}"
+                candidate_snapshot_status = "crash"
+            else:
+                best_score = float(state["best_score"])
+                current_size = total_size(targets)
+                best_size = int(state.get("best_size", current_size))
+                assert decision_score is not None
+                if is_improvement(float(decision_score), best_score, direction):
+                    status = "keep"
+                    candidate_snapshot_status = "keep"
+                elif is_tie(float(decision_score), best_score) and current_size < best_size:
+                    status = "keep"
+                    candidate_snapshot_status = "keep"
+                    reason = f"{reason} — tie on score, simpler target"
+                else:
+                    status = "discard"
+                    candidate_snapshot_status = "discard"
 
-    if status == "keep" and score is not None:
+    snapshot = snapshot_targets(targets, paths["snapshots"], experiment, candidate_snapshot_status)
+
+    if status == "keep" and decision_score is not None:
         state.update({
-            "best_score": score,
-            "best_size": target.stat().st_size,
+            "best_score": decision_score,
+            "best_public_score": public_score if public_score is not None else "",
+            "best_private_score": private_score if private_score is not None else "",
+            "best_size": total_size(targets),
             "best_snapshot": str(snapshot),
+            "best_snapshot_sha256": combined_targets_sha256(targets),
             "best_experiment": experiment,
+            "next_parent_experiment": experiment,
         })
     else:
-        revert_to_snapshot(target, state["best_snapshot"])
+        try:
+            revert_targets_from_snapshot(
+                targets,
+                state["best_snapshot"],
+                paths["snapshots"],
+                expected_sha256=state.get("best_snapshot_sha256") or None,
+                strict_snapshots=bool(getattr(args, "strict_snapshots", False)),
+            )
+        except SystemExit:
+            raise
+        except OSError as exc:
+            raise SystemExit(f"ERROR: failed to revert targets to best snapshot: {exc}") from exc
+        # After discard/crash, next parent is best keep (not this failed experiment)
+        state["next_parent_experiment"] = int(state.get("best_experiment", 1))
+
+    max_score_val = state.get("max_score", "")
+    # Sealed: only update when CLI provided max_score and seal check already passed
+    # (identical value is a no-op; change requires --allow-config-change).
+    if getattr(args, "max_score", None) is not None:
+        validate_max_score(args.max_score)
+        max_score_val = args.max_score
+        state["max_score"] = max_score_val
 
     state.update({
         "last_experiment": experiment,
-        "updated_at": datetime.now().isoformat(),
-        "target": str(target),
+        "updated_at": utc_now_iso(),
+        "target": str(targets[0]),
+        "targets": [str(t) for t in targets],
         "direction": direction,
         "verify_command": verify_command,
+        "private_verify_command": private_cmd,
         "guard_command": guard_command or "",
+        "metric": metric_name or "",
         "metric_regex": metric_regex or "",
         "cwd": args.cwd or "",
         "timeout": args.timeout,
+        "lineage": lineage,
+        "mode": HELPER_MODE,
+        "schema_version": STATE_SCHEMA_VERSION,
     })
     save_state(output_dir, state)
 
     append_results(output_dir, {
         "experiment": f"{experiment:03d}",
-        "score": format_score(score),
+        "score": format_score(public_score),
+        "max_score": format_score(float(max_score_val)) if max_score_val not in ("", None) else "",
         "best_score": format_score(float(state["best_score"])),
+        "private_score": format_score(private_score),
+        "decision_score": format_score(decision_score),
         "status": status,
         "description": reason,
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": utc_now_iso(),
         "direction": direction,
         "verify_command": verify_command,
         "guard_command": guard_command or "",
         "snapshot": str(snapshot),
+        "parent_experiment": f"{parent_id:03d}",
+        "lineage": lineage,
     })
 
     print(f"Experiment {experiment:03d}: {status.upper()}")
-    print(f"Score: {format_score(score)} | Best: {format_score(float(state['best_score']))} | Direction: {direction}")
+    # Machine-parseable tokens for harness scripts (do not localize)
+    print(f"STATUS={status}")
+    print(f"MODE={HELPER_MODE}")
+    print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
+    print(f"OUTPUT_DIR={output_dir}")
+    print(f"EXPERIMENT={experiment:03d}")
+    print(f"PARENT={parent_id:03d}")
+    print(f"DECISION={format_score(decision_score)}")
+    print(f"BEST={format_score(float(state['best_score']))}")
+    print(f"DIRECTION={direction}")
+    print(f"PUBLIC={format_score(public_score)}")
+    if private_cmd:
+        print(f"PRIVATE={format_score(private_score)}")
+    print_token("DESCRIPTION", reason)
+    if lineage:
+        print_token("LINEAGE", lineage)
+    print(f"SNAPSHOT={snapshot}")
+    print(f"REVERTED={'true' if status != 'keep' else 'false'}")
+    if status != "keep":
+        print(f"BEST_SNAPSHOT={state['best_snapshot']}")
+    print_budget_tokens(state)
+    print(
+        f"Score: {format_score(public_score)} | Decision: {format_score(decision_score)} | "
+        f"Best: {format_score(float(state['best_score']))} | Direction: {direction} | Parent: {parent_id:03d}"
+    )
+    if private_cmd:
+        print(f"Private score: {format_score(private_score)}")
     print(f"Snapshot: {snapshot}")
     if status != "keep":
-        print(f"Reverted target to best snapshot: {state['best_snapshot']}")
+        print(f"Reverted targets to best snapshot: {state['best_snapshot']}")
+    # Exit codes: 0 keep|discard, 1 crash, 2 budget (checked earlier)
     return 0 if status != "crash" else 1
 
 
 def cmd_run_verify(args: argparse.Namespace) -> int:
-    verify_result, score, verify_error = run_verify(args, args.verify_command, args.metric_regex)
+    """Dry-run public verify, optional private verify, and optional guard.
+
+    Emits the same style of ``KEY=value`` tokens as baseline/score so harnesses
+    can parse dry-runs without scraping prose. Exit 0 = ok, 1 = invalid.
+    """
+    args.timeout = resolve_timeout(args)
+    metric_name = getattr(args, "metric", None) or None
+    metric_regex = args.metric_regex or None
+    verify_result, score, verify_error = run_verify(args, args.verify_command, metric_regex, metric_name)
     print(f"Verify exit: {verify_result.returncode}")
     if verify_error:
         print(f"Metric: INVALID ({verify_error})")
         print(verify_result.combined_output[-1000:])
+        print("STATUS=invalid")
+        print(f"MODE={HELPER_MODE}")
+        print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
         return 1
     print(f"Metric: {format_score(score)}")
+
+    decision_score = score
+    private_cmd = getattr(args, "private_verify_command", None) or ""
+    if private_cmd:
+        priv_result, private_score, priv_error = run_verify(args, private_cmd, metric_regex, metric_name)
+        print(f"Private verify exit: {priv_result.returncode}")
+        if priv_error:
+            print(f"Private metric: INVALID ({priv_error})")
+            print(priv_result.combined_output[-1000:])
+            print("STATUS=invalid")
+            print(f"MODE={HELPER_MODE}")
+            print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
+            print(f"PUBLIC={format_score(score)}")
+            return 1
+        print(f"Private metric: {format_score(private_score)}")
+        decision_score = private_score
+        print(f"Decision metric: {format_score(decision_score)} (private)")
+    else:
+        private_score = None
+        print(f"Decision metric: {format_score(decision_score)} (public)")
+
     if args.guard_command:
         guard_result, guard_error = run_guard(args, args.guard_command)
         print(f"Guard exit: {guard_result.returncode if guard_result else 'skipped'}")
         if guard_error:
             print(guard_result.combined_output[-1000:] if guard_result else "")
+            print("STATUS=invalid")
+            print(f"MODE={HELPER_MODE}")
+            print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
+            print(f"PUBLIC={format_score(score)}")
+            if private_cmd:
+                print(f"PRIVATE={format_score(private_score)}")
+            print(f"DECISION={format_score(decision_score)}")
             return 1
+
+    # Success tokens (dry-run only; no snapshot / experiment mutation)
+    print("STATUS=ok")
+    print(f"MODE={HELPER_MODE}")
+    print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
+    print(f"PUBLIC={format_score(score)}")
+    if private_cmd:
+        print(f"PRIVATE={format_score(private_score)}")
+    print(f"DECISION={format_score(decision_score)}")
+    direction = getattr(args, "direction", None)
+    if direction:
+        print(f"DIRECTION={direction}")
     return 0
 
 
 def cmd_status(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir).resolve()
     state = load_state(output_dir)
+    if getattr(args, "json", False):
+        print(json.dumps(state_public_dict(state), indent=2, sort_keys=True))
+        return 0
+    progress = budget_progress(state)
     print(f"Target: {state['target']}")
+    if state.get("targets") and len(state["targets"]) > 1:
+        print(f"Targets: {', '.join(state['targets'])}")
     print(f"Mode: {state.get('mode', 'unknown')}")
-    print(f"Best: {format_score(float(state['best_score']))} ({state['direction']} is better), experiment {state['best_experiment']:03d}")
+    print(f"Best: {format_score(float(state['best_score']))} ({state['direction']} is better), experiment {int(state['best_experiment']):03d}")
     print(f"Best snapshot: {state['best_snapshot']}")
+    if state.get("metric"):
+        print(f"Metric name: {state['metric']}")
+    if state.get("private_verify_command"):
+        print(f"Private verify: {state['private_verify_command']}")
+        print("Decision metric: private (public still logged)")
+    if state.get("lineage"):
+        print(f"Lineage: {state['lineage']}")
+    if state.get("next_parent_experiment") is not None:
+        print(f"Next parent: {int(state['next_parent_experiment']):03d}")
+    # Budget progress (same numbers as status --json)
+    if progress["max_experiments"] is not None:
+        rem = progress["candidates_remaining"]
+        cand_exh = (
+            progress["candidates_done"] >= progress["max_experiments"]
+            if progress["max_experiments"] is not None
+            else False
+        )
+        print(
+            f"Budget: {progress['candidates_done']}/{progress['max_experiments']} candidates used"
+            f" ({rem} remaining)"
+            + (" — EXHAUSTED" if cand_exh else "")
+        )
+    if progress["max_wall_seconds"] is not None:
+        elapsed = progress["wall_elapsed_seconds"]
+        remaining = progress["wall_remaining_seconds"]
+        if elapsed is not None and remaining is not None:
+            print(
+                f"Wall budget: {elapsed:.1f}s elapsed / {progress['max_wall_seconds']:.0f}s"
+                f" ({remaining:.1f}s remaining)"
+                + (" — EXHAUSTED" if progress["wall_budget_exhausted"] else "")
+            )
+        else:
+            print(f"Max wall seconds: {progress['max_wall_seconds']:.0f}")
+    if state.get("instructions"):
+        print(f"Instructions: {state['instructions']}")
     path = results_path(output_dir)
     if path.exists():
-        rows = path.read_text().splitlines()[-6:]
+        rows = path.read_text(encoding="utf-8").splitlines()[-6:]
         print("\nRecent results:")
         print("\n".join(rows))
+    return 0
+
+
+RESULTS_JSON_FLOAT_FIELDS = (
+    "score",
+    "max_score",
+    "best_score",
+    "private_score",
+    "decision_score",
+)
+RESULTS_JSON_INT_FIELDS = (
+    "experiment",
+    "parent_experiment",
+)
+
+
+def coerce_results_json_row(row: dict[str, str]) -> dict[str, Any]:
+    """Coerce TSV string cells to numbers/null for ``results --json`` consumers.
+
+    Blank score cells become ``null``. Whole floats become ``int``. Unparseable
+    values stay as the original string so agents can still inspect them.
+    Experiment ids become integers (``001`` → ``1``) to match ``status --json``.
+    """
+    out: dict[str, Any] = dict(row)
+    for key in RESULTS_JSON_FLOAT_FIELDS:
+        raw = str(out.get(key, "") or "").strip()
+        if raw == "":
+            out[key] = None
+            continue
+        try:
+            val = float(raw)
+            out[key] = int(val) if val.is_integer() else val
+        except ValueError:
+            pass
+    for key in RESULTS_JSON_INT_FIELDS:
+        raw = str(out.get(key, "") or "").strip()
+        if raw == "":
+            out[key] = None
+            continue
+        try:
+            out[key] = int(raw)
+        except ValueError:
+            pass
+    return out
+
+
+def cmd_results(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir).resolve()
+    path = results_path(output_dir)
+    if not path.exists():
+        raise SystemExit(f"ERROR: no results.tsv at {path}")
+    with path.open(encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+    last_n = getattr(args, "last", None)
+    if last_n is not None:
+        n = int(last_n)
+        if n < 0:
+            raise SystemExit("ERROR: --last must be >= 0")
+        # Note: rows[-0:] is the full list in Python; handle 0 explicitly.
+        rows = [] if n == 0 else rows[-n:]
+    if getattr(args, "json", False):
+        print(json.dumps([coerce_results_json_row(r) for r in rows], indent=2))
+    else:
+        for row in rows:
+            print("\t".join(str(row.get(h, "")) for h in RESULTS_HEADER))
+    return 0
+
+
+def cmd_best(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir).resolve()
+    state = load_state(output_dir)
+    progress = budget_progress(state)
+    payload = {
+        "best_score": coerce_json_number(state.get("best_score")),
+        "best_experiment": coerce_json_int(state.get("best_experiment")),
+        "best_snapshot": state.get("best_snapshot"),
+        "direction": state.get("direction"),
+        "target": state.get("target"),
+        "targets": state.get("targets") or [state.get("target")],
+        "mode": state.get("mode", HELPER_MODE),
+        "schema_version": int(state.get("schema_version", STATE_SCHEMA_VERSION)),
+        "candidates_done": progress["candidates_done"],
+        "candidates_remaining": progress["candidates_remaining"],
+        "max_experiments": progress["max_experiments"],
+        "max_wall_seconds": progress["max_wall_seconds"],
+        "budget_exhausted": progress["budget_exhausted"],
+        "wall_elapsed_seconds": progress["wall_elapsed_seconds"],
+        "wall_remaining_seconds": progress["wall_remaining_seconds"],
+        "wall_budget_exhausted": progress["wall_budget_exhausted"],
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(f"Best score: {format_score(float(state['best_score']))}")
+        print(f"Best experiment: {int(state['best_experiment']):03d}")
+        print(f"Best snapshot: {state['best_snapshot']}")
+        if progress["max_experiments"] is not None:
+            print(
+                f"Budget: {progress['candidates_done']}/{progress['max_experiments']} "
+                f"({progress['candidates_remaining']} remaining)"
+                + (" EXHAUSTED" if progress["budget_exhausted"] else "")
+            )
+        if progress["max_wall_seconds"] is not None and progress["wall_remaining_seconds"] is not None:
+            print(
+                f"Wall budget: {progress['wall_elapsed_seconds']:.1f}s elapsed / "
+                f"{progress['max_wall_seconds']:.0f}s "
+                f"({progress['wall_remaining_seconds']:.1f}s remaining)"
+                + (" EXHAUSTED" if progress["wall_budget_exhausted"] else "")
+            )
+    return 0
+
+
+def cmd_fork(args: argparse.Namespace) -> int:
+    """Record a fork from the current best without changing target files or sealed metric config."""
+    output_dir = Path(args.output_dir).resolve()
+    make_dirs(output_dir)
+    state = load_state(output_dir)
+    best_exp = int(state.get("best_experiment", 1))
+    lineage = args.lineage or state.get("lineage", "") or "fork"
+    desc = args.description or f"fork from best experiment {best_exp:03d}"
+    state["next_parent_experiment"] = best_exp
+    state["lineage"] = lineage
+    state["updated_at"] = utc_now_iso()
+    save_state(output_dir, state)
+    # Audit trail only — does not consume a candidate score slot
+    fork_id = allocate_fork_id(output_dir)
+    append_results(output_dir, {
+        "experiment": fork_id,
+        "score": "",
+        "max_score": "",
+        "best_score": format_score(float(state["best_score"])),
+        "private_score": "",
+        "decision_score": "",
+        "status": "fork",
+        "description": desc,
+        "timestamp": utc_now_iso(),
+        "direction": state.get("direction", ""),
+        "verify_command": state.get("verify_command", ""),
+        "guard_command": state.get("guard_command", ""),
+        "snapshot": state.get("best_snapshot", ""),
+        "parent_experiment": f"{best_exp:03d}",
+        "lineage": lineage,
+    })
+    print(f"Fork ready: next parent={best_exp:03d} lineage={lineage}")
+    print("STATUS=fork")
+    print(f"MODE={HELPER_MODE}")
+    print(f"SCHEMA_VERSION={STATE_SCHEMA_VERSION}")
+    print(f"OUTPUT_DIR={output_dir}")
+    print(f"EXPERIMENT={fork_id}")
+    print(f"PARENT={best_exp:03d}")
+    print(f"BEST={format_score(float(state['best_score']))}")
+    print(f"BEST_EXPERIMENT={best_exp:03d}")
+    print(f"DIRECTION={state.get('direction', '')}")
+    print_token("LINEAGE", lineage)
+    print_token("DESCRIPTION", desc)
+    print(f"SNAPSHOT={state.get('best_snapshot', '')}")
+    print("REVERTED=false")
+    print(f"Logged: {fork_id} (status=fork; does not count toward max_experiments)")
+    print("Sealed verify/metric/direction unchanged.")
+    if args.description:
+        print(f"Note: {args.description}")
     return 0
 
 
@@ -439,16 +1614,44 @@ def add_common(
     require_target: bool = False,
     require_direction: bool = False,
 ) -> None:
-    parser.add_argument("--target", required=require_target, help="Path to the file the active harness is optimizing")
+    parser.add_argument("--target", default=None, help="Single target file the active harness is optimizing")
+    parser.add_argument("--targets", nargs="+", default=None, help="Multiple target files to snapshot/revert together")
     parser.add_argument("--output-dir", default="./autoresearch-results/", help="Directory for state, snapshots, runs, and results.tsv")
-    parser.add_argument("--verify-command", required=require_verify, help="Command that prints/exposes the numeric metric")
-    parser.add_argument("--metric-regex", default=None, help="Regex for extracting the metric. First capture group is used when present; otherwise the whole match is parsed.")
-    parser.add_argument("--direction", choices=("higher", "lower"), required=require_direction, help="Whether higher or lower metric values are better")
+    parser.add_argument("--verify-command", required=require_verify, default=None, help="Command that prints/exposes the public numeric metric")
+    parser.add_argument(
+        "--private-verify-command",
+        default=None,
+        help="Optional private/held-out verify command; when set, keep/discard uses this score",
+    )
+    parser.add_argument(
+        "--metric",
+        default=None,
+        help="Metric name to extract (e.g. Score, accuracy). Last name: value match wins.",
+    )
+    parser.add_argument(
+        "--metric-regex",
+        default=None,
+        help="Regex for extracting the metric (overrides --metric). Last match wins.",
+    )
+    parser.add_argument("--max-score", type=float, default=None, help="Optional known max score for TSV logging")
+    parser.add_argument("--direction", choices=("higher", "lower"), required=require_direction, default=None, help="Whether higher or lower metric values are better")
     parser.add_argument("--guard-command", default=None, help="Optional command that must exit 0 for a change to be kept")
     parser.add_argument("--cwd", default=None, help="Working directory for verify and guard commands")
-    parser.add_argument("--timeout", type=int, default=120, help="Timeout in seconds for verify and guard commands")
-    parser.add_argument("--allowed-root", default=None, help="Restrict target paths to this root (default: current working directory)")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=None,
+        help=f"Timeout in seconds for verify and guard commands (default: inherit from state or {DEFAULT_TIMEOUT})",
+    )
+    parser.add_argument("--allowed-root", default=None, help="Restrict target paths to this root (default: cwd)")
     parser.add_argument("--description", default="", help="Short description of this baseline or candidate change")
+    parser.add_argument("--lineage", default=None, help="Optional strategy/lineage tag for this experiment")
+    parser.add_argument("--instructions", default=None, help="Steering instructions text or path to a file")
+    parser.add_argument("--max-experiments", type=int, default=None, help="Max candidate score runs after baseline (0/omit = unlimited)")
+    parser.add_argument("--max-wall-seconds", type=int, default=None, help="Wall-clock budget from baseline created_at")
+    if require_target:
+        # enforce at runtime that one of target/targets is present
+        pass
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -462,6 +1665,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     score = subparsers.add_parser("score", help="Score the active harness's current candidate and keep/discard it")
     add_common(score, require_verify=False)
+    score.add_argument("--parent-experiment", default=None, help="Explicit parent experiment id (default: next_parent from state)")
+    score.add_argument(
+        "--allow-config-change",
+        action="store_true",
+        help="Allow changing sealed verify/guard/metric/direction/private-verify/cwd/targets/max-score mid-run",
+    )
+    score.add_argument(
+        "--strict-snapshots",
+        action="store_true",
+        help="Hard-fail if best snapshot content hash does not match state",
+    )
     score.set_defaults(func=cmd_score)
 
     run_verify_parser = subparsers.add_parser("run-verify", help="Dry-run a verify command and optional guard")
@@ -470,7 +1684,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = subparsers.add_parser("status", help="Show current autoresearch state")
     status.add_argument("--output-dir", default="./autoresearch-results/")
+    status.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     status.set_defaults(func=cmd_status)
+
+    results = subparsers.add_parser("results", help="Show results.tsv rows")
+    results.add_argument("--output-dir", default="./autoresearch-results/")
+    results.add_argument("--json", action="store_true", help="Emit JSON array of rows")
+    results.add_argument(
+        "--last",
+        type=int,
+        default=None,
+        help="Only last N rows (0 = empty; must be >= 0)",
+    )
+    results.set_defaults(func=cmd_results)
+
+    best = subparsers.add_parser("best", help="Show current best score/snapshot")
+    best.add_argument("--output-dir", default="./autoresearch-results/")
+    best.add_argument("--json", action="store_true", help="Emit JSON")
+    best.set_defaults(func=cmd_best)
+
+    fork = subparsers.add_parser("fork", help="Fork next experiment parent from best (no file changes)")
+    fork.add_argument("--output-dir", default="./autoresearch-results/")
+    fork.add_argument("--lineage", default=None, help="New lineage/strategy tag")
+    fork.add_argument("--description", default="", help="Note for the operator/harness")
+    fork.set_defaults(func=cmd_fork)
 
     return parser
 
@@ -478,6 +1715,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in ("baseline",) and not args.target and not args.targets:
+        parser.error("baseline requires --target or --targets")
+    if args.command == "baseline" and args.target and args.targets:
+        parser.error("use either --target or --targets, not both")
+    if args.command == "score" and args.target and args.targets:
+        parser.error("use either --target or --targets, not both")
     return args.func(args)
 
 

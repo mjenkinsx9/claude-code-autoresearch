@@ -25,21 +25,57 @@ def load_results(results_path: str) -> list[dict[str, Any]]:
     path = Path(results_path)
     if not path.exists():
         raise SystemExit(f"Error: results file not found: {results_path}")
+    if not path.is_file():
+        raise SystemExit(f"Error: results path is not a file: {results_path}")
 
     rows: list[dict[str, Any]] = []
-    with path.open(newline="") as fh:
+    try:
+        fh = path.open(newline="", encoding="utf-8")
+    except OSError as exc:
+        raise SystemExit(f"Error: cannot read results file {results_path}: {exc}") from exc
+    with fh:
         reader = csv.DictReader(fh, delimiter="\t")
         for row in reader:
             row = dict(row)
             row["score_num"] = parse_number(row.get("score"))
+            row["private_score_num"] = parse_number(row.get("private_score"))
             row["best_score_num"] = parse_number(row.get("best_score"))
             row["max_score_num"] = parse_number(row.get("max_score"))
-            if row["score_num"] is not None and row["max_score_num"]:
-                row["score_pct"] = round(row["score_num"] / row["max_score_num"] * 100, 1)
+            # Prefer explicit decision_score column; else private; else public
+            decision = parse_number(row.get("decision_score"))
+            if decision is None:
+                decision = row["private_score_num"]
+            if decision is None:
+                decision = row["score_num"]
+            row["decision_score_num"] = decision
+            max_score = row["max_score_num"]
+            if decision is not None and max_score not in (None, 0):
+                row["score_pct"] = round(decision / max_score * 100, 1)
             else:
                 row["score_pct"] = None
             rows.append(row)
     return rows
+
+
+def decision_best_score(results: list[dict[str, Any]]) -> tuple[float | None, str]:
+    """Best decision score: prefer last row's best_score column, else max/min of decision metrics."""
+    if not results:
+        return None, "higher"
+    direction = (results[-1].get("direction") or "higher").strip() or "higher"
+    # Authoritative: last non-empty best_score from TSV (loop decision state)
+    for row in reversed(results):
+        if row.get("best_score_num") is not None:
+            return row["best_score_num"], direction
+    # Fallback: decide from decision metrics of non-crash rows
+    values = [
+        r["decision_score_num"]
+        for r in results
+        if r.get("decision_score_num") is not None and r.get("status") != "crash"
+    ]
+    if not values:
+        return None, direction
+    best = max(values) if direction == "higher" else min(values)
+    return best, direction
 
 
 def safe_json(value: Any) -> str:
@@ -53,35 +89,52 @@ def generate_html(results: list[dict[str, Any]], title: str) -> str:
     kept = sum(1 for r in results if r.get("status") == "keep")
     discarded = sum(1 for r in results if r.get("status") == "discard")
     crashed = sum(1 for r in results if r.get("status") == "crash")
-    latest = results[-1]
-    direction = latest.get("direction") or "higher"
-    numeric_scores = [r["score_num"] for r in results if r.get("score_num") is not None and r.get("status") != "crash"]
-    if numeric_scores:
-        best_score = max(numeric_scores) if direction == "higher" else min(numeric_scores)
-    else:
-        best_score = None
+    forked = sum(1 for r in results if r.get("status") == "fork")
+    best_score, direction = decision_best_score(results)
+    uses_private = any(r.get("private_score_num") is not None for r in results)
 
     rows = []
     for row in results:
         status = html.escape(row.get("status", ""))
+        if row.get("decision_score"):
+            decision_disp = str(row.get("decision_score", ""))
+        elif row.get("decision_score_num") is not None:
+            d = float(row["decision_score_num"])
+            decision_disp = str(int(d)) if d.is_integer() else f"{d:.6g}"
+        else:
+            decision_disp = ""
         rows.append(
             "<tr>"
             f"<td>{html.escape(row.get('experiment', ''))}</td>"
+            f"<td>{html.escape(row.get('parent_experiment', '') or '')}</td>"
             f"<td><span class='status {status}'>{status}</span></td>"
             f"<td>{html.escape(row.get('score', ''))}</td>"
+            f"<td>{html.escape(row.get('private_score', '') or '')}</td>"
+            f"<td>{html.escape(str(decision_disp))}</td>"
             f"<td>{html.escape(row.get('best_score', ''))}</td>"
+            f"<td>{html.escape(row.get('lineage', '') or '')}</td>"
             f"<td>{html.escape(row.get('description', ''))}</td>"
             f"<td>{html.escape(row.get('timestamp', ''))}</td>"
             "</tr>"
         )
 
+    # Chart uses decision metric trajectory (private when present, else public)
     chart_data = [
-        {"experiment": r.get("experiment"), "score": r.get("score_num"), "status": r.get("status")}
+        {
+            "experiment": r.get("experiment"),
+            "score": r.get("decision_score_num"),
+            "status": r.get("status"),
+        }
         for r in results
     ]
 
-    best_text = "n/a" if best_score is None else (str(int(best_score)) if float(best_score).is_integer() else f"{best_score:.6g}")
+    best_text = (
+        "n/a"
+        if best_score is None
+        else (str(int(best_score)) if float(best_score).is_integer() else f"{best_score:.6g}")
+    )
     title_escaped = html.escape(title)
+    best_caption = "decision best (private when set)" if uses_private else "decision best"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -101,22 +154,26 @@ th {{ color: #a5b4fc; }}
 .status.keep {{ background: #064e3b; color: #a7f3d0; }}
 .status.discard {{ background: #4c1d1d; color: #fecaca; }}
 .status.crash {{ background: #451a03; color: #fed7aa; }}
+.status.fork {{ background: #1e3a5f; color: #93c5fd; }}
 canvas {{ width: 100%; max-height: 320px; background: #0b0c18; border-radius: 8px; }}
+.note {{ color: #94a3b8; font-size: .9rem; }}
 </style>
 </head>
 <body>
 <h1>{title_escaped}</h1>
 <div class="stats">
   <div class="card"><div>Experiments</div><div class="stat">{len(results)}</div></div>
-  <div class="card"><div>Best score</div><div class="stat">{best_text}</div><div>{html.escape(direction)} is better</div></div>
+  <div class="card"><div>Best score</div><div class="stat">{best_text}</div><div>{html.escape(direction)} is better</div><div class="note">{html.escape(best_caption)}</div></div>
   <div class="card"><div>Kept</div><div class="stat">{kept}</div></div>
   <div class="card"><div>Discarded</div><div class="stat">{discarded}</div></div>
   <div class="card"><div>Crashed</div><div class="stat">{crashed}</div></div>
+  <div class="card"><div>Forks</div><div class="stat">{forked}</div></div>
 </div>
-<div class="card"><canvas id="chart" width="1000" height="320"></canvas></div>
+<div class="card"><canvas id="chart" width="1000" height="320"></canvas>
+<p class="note">Chart plots decision score (private when configured; otherwise public).</p></div>
 <div class="card">
 <table>
-<thead><tr><th>Experiment</th><th>Status</th><th>Score</th><th>Best</th><th>Description</th><th>Timestamp</th></tr></thead>
+<thead><tr><th>Experiment</th><th>Parent</th><th>Status</th><th>Score</th><th>Private</th><th>Decision</th><th>Best</th><th>Lineage</th><th>Description</th><th>Timestamp</th></tr></thead>
 <tbody>{''.join(rows)}</tbody>
 </table>
 </div>
@@ -133,18 +190,24 @@ if (scores.length) {{
   ctx.strokeStyle = '#4f46e5';
   ctx.lineWidth = 2;
   ctx.beginPath();
+  let pathStarted = false;
   data.forEach((d, i) => {{
     if (typeof d.score !== 'number') return;
     const x = pad + (i / Math.max(1, data.length - 1)) * (w - pad * 2);
     const y = h - pad - ((d.score - min) / Math.max(1e-9, max - min)) * (h - pad * 2);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    // Do not use i===0: fork/crash rows with null scores can precede the first point
+    if (!pathStarted) {{ ctx.moveTo(x, y); pathStarted = true; }}
+    else {{ ctx.lineTo(x, y); }}
   }});
   ctx.stroke();
   data.forEach((d, i) => {{
     if (typeof d.score !== 'number') return;
     const x = pad + (i / Math.max(1, data.length - 1)) * (w - pad * 2);
     const y = h - pad - ((d.score - min) / Math.max(1e-9, max - min)) * (h - pad * 2);
-    ctx.fillStyle = d.status === 'keep' ? '#22c55e' : d.status === 'crash' ? '#f97316' : '#ef4444';
+    ctx.fillStyle = d.status === 'keep' ? '#22c55e'
+      : d.status === 'crash' ? '#f97316'
+      : d.status === 'fork' ? '#60a5fa'
+      : '#ef4444';
     ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill();
   }});
   ctx.fillStyle = '#cbd5e1';
@@ -160,21 +223,24 @@ if (scores.length) {{
 """
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate an HTML dashboard from autoresearch results.tsv")
     parser.add_argument("--results", required=True, help="Path to results.tsv")
     parser.add_argument("--output", default="dashboard.html", help="Output HTML file path")
     parser.add_argument("--title", default="Autoresearch Agent Results", help="Dashboard title")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     results = load_results(args.results)
-    output = generate_html(results, args.title)
-    Path(args.output).write_text(output)
+    html = generate_html(results, args.title)
+    out_path = Path(args.output)
+    if out_path.parent and str(out_path.parent) not in ("", "."):
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html, encoding="utf-8")
     print(f"Dashboard written to {args.output}")
     if results:
-        non_crash = [r["score_num"] for r in results if r.get("status") != "crash" and r.get("score_num") is not None]
-        if non_crash:
-            print(f"Best score: {max(non_crash)}")
+        best, direction = decision_best_score(results)
+        if best is not None:
+            print(f"Best score: {best} ({direction} is better)")
     return 0
 
 

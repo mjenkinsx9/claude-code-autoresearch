@@ -7,20 +7,20 @@ Detailed protocol for the autoresearch iteration loop. SKILL.md has the summary;
 Autoresearch supports two loop modes, both driven by the active harness session:
 
 - **Unbounded (default):** Loop until the user interrupts or a stop rule triggers.
-- **Bounded:** Loop exactly N experiments by tracking `current_iteration` against `max_iterations` in the session notes/results log.
+- **Bounded:** Prefer mechanical budgets on baseline: `--max-experiments N` (candidate scores after baseline) and/or `--max-wall-seconds S`. The helper refuses further `score` with exit code 2 when exceeded.
 
-The helper scripts do not run the agent loop for you and never invoke headless model commands. They only verify, guard, snapshot, log, and revert. When bounded, print a final summary after the last iteration and stop.
+The helper scripts do not run the agent loop for you and never invoke headless model commands. They only verify, guard, snapshot, log, and revert. **Stop when budget is exhausted or stop rules fire** — do not treat “NEVER STOP” as an absolute.
 
-## Phase 1: Review (30 seconds)
+## Phase 1: Review (context diet)
 
-Before each iteration, build situational awareness:
+Before each iteration, build situational awareness with **minimal** context:
 
 ```
-1. Read current state of in-scope files (full context)
-2. Read last 10-20 entries from results log
-3. Read git log --oneline -20 to see recent changes
-4. Identify: what worked, what failed, what's untried
-5. If bounded: check current_iteration vs max_iterations
+1. status --json (or state.json): best score, best experiment, lineage, budget
+2. Last 10-20 one-line rows from results.tsv (not full verify logs)
+3. Current in-scope target file(s) only
+4. On crash only: tail of runs/experiment_*/verify.txt or guard.txt
+5. Identify: what worked, what failed, what's untried; parent after discard is best keep
 ```
 
 **Why read every time?** After rollbacks, state may differ from what you expect. Never assume — always verify.
@@ -79,9 +79,9 @@ Run the agreed-upon verification command. Capture output.
 
 ## Phase 5.5: Guard (Regression Check)
 
-If a **guard** command was defined during setup, run it after verification.
+If a **guard** command was defined during setup, the helper runs it whenever verify succeeds (including regressions). Optional private verify, when configured, is the **decision** metric for keep/discard.
 
-The guard is a command that must ALWAYS pass — it protects existing functionality while the main metric is being optimized. Common guards: `npm test`, `npm run typecheck`, `pytest`, `cargo test`.
+The guard protects existing functionality while the main metric is being optimized. Common guards: `npm test`, `npm run typecheck`, `pytest`, `cargo test`.
 
 **Key distinction:**
 - **Verify** answers: "Did the metric improve?" (the goal)
@@ -89,12 +89,10 @@ The guard is a command that must ALWAYS pass — it protects existing functional
 
 **Guard rules:**
 - Only run if a guard was defined (it's optional)
-- Run AFTER verify — no point checking guard if the metric didn't improve
-- Guard is pass/fail only (exit code 0 = pass). No metric extraction needed
-- If guard fails, revert the optimization and try to rework it (max 2 attempts)
+- Helper runs guard after successful verify (not only when metric improved)
+- If guard fails, helper logs `crash` and reverts; harness may rework as a new experiment (max 2 attempts)
 - NEVER modify guard/test files — always adapt the implementation instead
-- Log guard failures distinctly so the agent can learn what kinds of changes cause regressions
-- When adapting a guard command (e.g., `npm run typecheck` → `npx tsc --noEmit`), log the **actual command that was run** in the TSV results log — not the original name. This keeps the log accurate for post-hoc analysis
+- Mid-run sealed config changes need `--allow-config-change`
 
 **Guard failure recovery (max 2 rework attempts):**
 
@@ -149,34 +147,24 @@ ELIF crashed:
 
 ## Phase 7: Log Results
 
-Append to results log (TSV format):
-
-```
-iteration  commit   metric   status   description
-42         a1b2c3d  0.9821   keep     increase attention heads from 8 to 12
-43         -        0.9845   discard  switch optimizer to SGD
-44         -        0.0000   crash    double batch size (OOM)
-```
+`scripts/autoresearch_loop.py score` appends to `results.tsv`. Full schema (including `parent_experiment`, `lineage`, `private_score`) is in `references/results-logging.md`. Prefer `status --json` / `results --json` for machine-readable state.
 
 ## Phase 8: Repeat
 
 ### Unbounded Mode (default)
 
-Go to Phase 1. **NEVER STOP. NEVER ASK IF YOU SHOULD CONTINUE.**
+Go to Phase 1 until the user interrupts or a stop rule fires. Do **not** ignore production/secrets stop rules.
 
 ### Bounded Mode
 
+Prefer mechanical budgets set at baseline:
+
+```bash
+--max-experiments N    # candidate scores after baseline
+--max-wall-seconds S   # wall clock from baseline created_at
 ```
-IF current_iteration < max_iterations:
-    Go to Phase 1
-ELIF goal_achieved:
-    Print: "Goal achieved at iteration {N}! Final metric: {value}"
-    Print final summary
-    STOP
-ELSE:
-    Print final summary
-    STOP
-```
+
+When budget is exceeded, `score` exits 2 with `BUDGET_EXCEEDED` and does not mutate targets. Print a final summary and stop.
 
 **Final summary format:**
 ```
